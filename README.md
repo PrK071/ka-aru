@@ -45,3 +45,5 @@ Abra `http://127.0.0.1:5173`.
 - Capas e imagens de personagens ficam remotas/proxy, sem salvar permanente no PC.
 - Cache de leitura é temporário por capítulo.
 - Busca tenta fontes PT-BR completas antes de fallback internacional.
+- Debug MangasBrasuka: `tools/debug/mangasbrasuka_scraper.py`.
+- Saída local `downloads_brasuka/` fica ignorada pelo Git.

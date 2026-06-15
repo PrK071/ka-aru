@@ -1,6 +1,8 @@
 downloads/
+downloads_brasuka/
 __pycache__/
 *.pyc
 .reader_home_cache/
 frontend/node_modules/
 frontend/dist/
+debug_brasuka_last.html
