@@ -1,0 +1,53 @@
+{
+  "sites": [
+    {
+      "name": "MangaLivre",
+      "kind": "mangalivre",
+      "base_url": "https://mangalivre.blog",
+      "manga_url_template": "https://mangalivre.blog/manga/{slug}",
+      "default_lang": "pt-br"
+    },
+    {
+      "name": "MangaDex",
+      "kind": "mangadex",
+      "base_url": "https://mangadex.org",
+      "manga_url_template": "https://mangadex.org/title/{slug}",
+      "default_lang": "pt-br"
+    },
+    {
+      "name": "ReadFull",
+      "kind": "readfull",
+      "base_url": "https://readfullapi.herokuapp.com",
+      "manga_url_template": "readfull://novel/{slug}",
+      "default_lang": "en"
+    },
+    {
+      "name": "One Piece Project",
+      "kind": "pieceproject",
+      "base_url": "https://scan.onepieceproject.com.br/",
+      "manga_url_template": "pieceproject://one-piece",
+      "default_lang": "pt-br"
+    },
+    {
+      "name": "DragonTea",
+      "kind": "dragontea",
+      "base_url": "https://dragontea.ink",
+      "manga_url_template": "https://dragontea.ink/{slug}",
+      "default_lang": "pt-br"
+    },
+    {
+      "name": "Toomics",
+      "kind": "toomics",
+      "base_url": "https://global.toomics.com",
+      "manga_url_template": "https://global.toomics.com/por/webtoon/episode/toon/{slug}",
+      "default_lang": "pt-br"
+    },
+    {
+      "name": "MangaKatana",
+      "kind": "mangakatana",
+      "base_url": "https://mangakatana.com",
+      "manga_url_template": "https://mangakatana.com/manga/{slug}",
+      "default_lang": "en"
+    }
+  ]
+}

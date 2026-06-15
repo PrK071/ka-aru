@@ -1,0 +1,6 @@
+downloads/
+__pycache__/
+*.pyc
+.reader_home_cache/
+frontend/node_modules/
+frontend/dist/

@@ -1,0 +1,1031 @@
+
+--- erro ---
+Traceback (most recent call last):
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+        conn,
+    ...<10 lines>...
+        **response_kw,
+    )
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\http\client.py", line 1430, in getresponse
+    response.begin()
+    ~~~~~~~~~~~~~~^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\http\client.py", line 331, in begin
+    version, status, reason = self._read_status()
+                              ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\http\client.py", line 292, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 719, in readinto
+    return self._sock.recv_into(b)
+           ~~~~~~~~~~~~~~~~~~~~^^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\ssl.py", line 1304, in recv_into
+    return self.read(nbytes, buffer)
+           ~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\ssl.py", line 1138, in read
+    return self._sslobj.read(len, buffer)
+           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+ConnectionResetError: [WinError 10054] Foi forçado o cancelamento de uma conexão existente pelo host remoto
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\adapters.py", line 644, in send
+    resp = conn.urlopen(
+        method=request.method,
+    ...<9 lines>...
+        chunked=chunked,
+    )
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+        method, url, error=new_e, _pool=self, _stacktrace=sys.exc_info()[2]
+    )
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\util\retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\util\util.py", line 38, in reraise
+    raise value.with_traceback(tb)
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+        conn,
+    ...<10 lines>...
+        **response_kw,
+    )
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\http\client.py", line 1430, in getresponse
+    response.begin()
+    ~~~~~~~~~~~~~~^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\http\client.py", line 331, in begin
+    version, status, reason = self._read_status()
+                              ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\http\client.py", line 292, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 719, in readinto
+    return self._sock.recv_into(b)
+           ~~~~~~~~~~~~~~~~~~~~^^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\ssl.py", line 1304, in recv_into
+    return self.read(nbytes, buffer)
+           ~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\ssl.py", line 1138, in read
+    return self._sslobj.read(len, buffer)
+           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+urllib3.exceptions.ProtocolError: ('Connection aborted.', ConnectionResetError(10054, 'Foi forçado o cancelamento de uma conexão existente pelo host remoto', None, 10054, None))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 593, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 507, in work
+    path, _content_type = self.reader.get_image(page_number)
+                          ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2045, in get_image
+    response = self.state.session.get(
+        image_url,
+    ...<4 lines>...
+        },
+    )
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\sessions.py", line 602, in get
+    return self.request("GET", url, **kwargs)
+           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\adapters.py", line 659, in send
+    raise ConnectionError(err, request=request)
+requests.exceptions.ConnectionError: ('Connection aborted.', ConnectionResetError(10054, 'Foi forçado o cancelamento de uma conexão existente pelo host remoto', None, 10054, None))
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 670, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 432, in work
+    return None, self.reader.load_chapter(selected_url)
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1843, in load_chapter
+    return self._load_mangadex_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1916, in _load_mangadex_chapter
+    raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
+RuntimeError: A API do MangaDex nao retornou paginas para este capitulo.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 686, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 432, in work
+    return None, self.reader.load_chapter(selected_url)
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1843, in load_chapter
+    return self._load_mangadex_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1916, in _load_mangadex_chapter
+    raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
+RuntimeError: A API do MangaDex nao retornou paginas para este capitulo.
+
+--- erro ---
+Traceback (most recent call last):
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+        conn,
+    ...<10 lines>...
+        **response_kw,
+    )
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py", line 488, in _make_request
+    raise new_e
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py", line 464, in _make_request
+    self._validate_conn(conn)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py", line 1106, in _validate_conn
+    conn.connect()
+    ~~~~~~~~~~~~^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connection.py", line 796, in connect
+    sock_and_verified = _ssl_wrap_socket_and_match_hostname(
+        sock=sock,
+    ...<14 lines>...
+        assert_fingerprint=self.assert_fingerprint,
+    )
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connection.py", line 975, in _ssl_wrap_socket_and_match_hostname
+    ssl_sock = ssl_wrap_socket(
+        sock=sock,
+    ...<8 lines>...
+        tls_in_tls=tls_in_tls,
+    )
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\util\ssl_.py", line 433, in ssl_wrap_socket
+    ssl_sock = _ssl_wrap_socket_impl(sock, context, tls_in_tls, server_hostname)
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\util\ssl_.py", line 477, in _ssl_wrap_socket_impl
+    return ssl_context.wrap_socket(sock, server_hostname=server_hostname)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\ssl.py", line 455, in wrap_socket
+    return self.sslsocket_class._create(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        sock=sock,
+        ^^^^^^^^^^
+    ...<5 lines>...
+        session=session
+        ^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\ssl.py", line 1076, in _create
+    self.do_handshake()
+    ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\ssl.py", line 1372, in do_handshake
+    self._sslobj.do_handshake()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+ConnectionResetError: [WinError 10054] Foi forçado o cancelamento de uma conexão existente pelo host remoto
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\adapters.py", line 644, in send
+    resp = conn.urlopen(
+        method=request.method,
+    ...<9 lines>...
+        chunked=chunked,
+    )
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+        method, url, error=new_e, _pool=self, _stacktrace=sys.exc_info()[2]
+    )
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\util\retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\util\util.py", line 38, in reraise
+    raise value.with_traceback(tb)
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+        conn,
+    ...<10 lines>...
+        **response_kw,
+    )
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py", line 488, in _make_request
+    raise new_e
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py", line 464, in _make_request
+    self._validate_conn(conn)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connectionpool.py", line 1106, in _validate_conn
+    conn.connect()
+    ~~~~~~~~~~~~^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connection.py", line 796, in connect
+    sock_and_verified = _ssl_wrap_socket_and_match_hostname(
+        sock=sock,
+    ...<14 lines>...
+        assert_fingerprint=self.assert_fingerprint,
+    )
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\connection.py", line 975, in _ssl_wrap_socket_and_match_hostname
+    ssl_sock = ssl_wrap_socket(
+        sock=sock,
+    ...<8 lines>...
+        tls_in_tls=tls_in_tls,
+    )
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\util\ssl_.py", line 433, in ssl_wrap_socket
+    ssl_sock = _ssl_wrap_socket_impl(sock, context, tls_in_tls, server_hostname)
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\urllib3\util\ssl_.py", line 477, in _ssl_wrap_socket_impl
+    return ssl_context.wrap_socket(sock, server_hostname=server_hostname)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\ssl.py", line 455, in wrap_socket
+    return self.sslsocket_class._create(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        sock=sock,
+        ^^^^^^^^^^
+    ...<5 lines>...
+        session=session
+        ^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\ssl.py", line 1076, in _create
+    self.do_handshake()
+    ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\ssl.py", line 1372, in do_handshake
+    self._sslobj.do_handshake()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+urllib3.exceptions.ProtocolError: ('Connection aborted.', ConnectionResetError(10054, 'Foi forçado o cancelamento de uma conexão existente pelo host remoto', None, 10054, None))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 686, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 432, in work
+    return None, self.reader.load_chapter(selected_url)
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1866, in load_chapter
+    image_payload = request_json(session, image_api_url, url, self.args.timeout)
+  File "c:\Users\User\Documents\scrapper manga\mangafire_scraper.py", line 407, in request_json
+    response = session.get(
+        url,
+    ...<4 lines>...
+        },
+    )
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\sessions.py", line 602, in get
+    return self.request("GET", url, **kwargs)
+           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\adapters.py", line 659, in send
+    raise ConnectionError(err, request=request)
+requests.exceptions.ConnectionError: ('Connection aborted.', ConnectionResetError(10054, 'Foi forçado o cancelamento de uma conexão existente pelo host remoto', None, 10054, None))
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1030, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 513, in work
+    payload = self.reader.search_manga(query, limit=15)
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1049, in search_manga
+    raise RuntimeError(f"Nao consegui buscar mangas. Detalhe: {last_error}")
+RuntimeError: Nao consegui buscar mangas. Detalhe: Message: Reached error page: about:neterror?e=dnsNotFound&u=https%3A//mangafire.to/&c=UTF-8&d=We%20can%E2%80%99t%20connect%20to%20the%20server%20at%20mangafire.to.&a=
+Stacktrace:
+RemoteError@chrome://remote/content/shared/RemoteError.sys.mjs:8:8
+WebDriverError@chrome://remote/content/shared/webdriver/Errors.sys.mjs:202:5
+UnknownError@chrome://remote/content/shared/webdriver/Errors.sys.mjs:961:5
+checkReadyState@chrome://remote/content/marionette/navigate.sys.mjs:59:24
+onNavigation@chrome://remote/content/marionette/navigate.sys.mjs:351:39
+emit@resource://gre/modules/EventEmitter.sys.mjs:156:19
+receiveMessage@chrome://remote/content/marionette/actors/MarionetteEventsParent.sys.mjs:33:25
+
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1030, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 513, in work
+    payload = self.reader.search_manga(query, limit=15)
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1049, in search_manga
+    raise RuntimeError(f"Nao consegui buscar mangas. Detalhe: {last_error}")
+RuntimeError: Nao consegui buscar mangas. Detalhe: Message: Navigation timed out after 65000 ms
+Stacktrace:
+RemoteError@chrome://remote/content/shared/RemoteError.sys.mjs:8:8
+WebDriverError@chrome://remote/content/shared/webdriver/Errors.sys.mjs:202:5
+TimeoutError@chrome://remote/content/shared/webdriver/Errors.sys.mjs:847:5
+bail@chrome://remote/content/shared/Sync.sys.mjs:440:19
+
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1330, in search_readfull
+    raw_items = self._readfull_paginated("/novels/", max_pages=10)
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 862, in _readfull_paginated
+    payload = self._readfull_get(next_path)
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 842, in _readfull_get
+    response.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\models.py", line 1026, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://readfullapi.herokuapp.com/novels/
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1312, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 567, in work
+    payload = self.reader.search_readfull(query, limit=15)
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1332, in search_readfull
+    raise RuntimeError(
+        f"API ReadFull indisponivel em {self.readfull_api_base_url}: {exc}"
+    ) from exc
+RuntimeError: API ReadFull indisponivel em https://readfullapi.herokuapp.com: 404 Client Error: Not Found for url: https://readfullapi.herokuapp.com/novels/
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1330, in search_readfull
+    raw_items = self._readfull_paginated("/novels/", max_pages=10)
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 862, in _readfull_paginated
+    payload = self._readfull_get(next_path)
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 842, in _readfull_get
+    response.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\models.py", line 1026, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://readfullapi.herokuapp.com/novels/
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1312, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 567, in work
+    payload = self.reader.search_readfull(query, limit=15)
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1332, in search_readfull
+    raise RuntimeError(
+        f"API ReadFull indisponivel em {self.readfull_api_base_url}: {exc}"
+    ) from exc
+RuntimeError: API ReadFull indisponivel em https://readfullapi.herokuapp.com: 404 Client Error: Not Found for url: https://readfullapi.herokuapp.com/novels/
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1330, in search_readfull
+    raw_items = self._readfull_paginated("/novels/", max_pages=10)
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 862, in _readfull_paginated
+    payload = self._readfull_get(next_path)
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 842, in _readfull_get
+    response.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\models.py", line 1026, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://readfullapi.herokuapp.com/novels/
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1312, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 567, in work
+    payload = self.reader.search_readfull(query, limit=15)
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1332, in search_readfull
+    raise RuntimeError(
+        f"API ReadFull indisponivel em {self.readfull_api_base_url}: {exc}"
+    ) from exc
+RuntimeError: API ReadFull indisponivel em https://readfullapi.herokuapp.com: 404 Client Error: Not Found for url: https://readfullapi.herokuapp.com/novels/
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1330, in search_readfull
+    raw_items = self._readfull_paginated("/novels/", max_pages=10)
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 862, in _readfull_paginated
+    payload = self._readfull_get(next_path)
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 842, in _readfull_get
+    response.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\models.py", line 1026, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://readfullapi.herokuapp.com/novels/
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1312, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 567, in work
+    payload = self.reader.search_readfull(query, limit=15)
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1332, in search_readfull
+    raise RuntimeError(
+        f"API ReadFull indisponivel em {self.readfull_api_base_url}: {exc}"
+    ) from exc
+RuntimeError: API ReadFull indisponivel em https://readfullapi.herokuapp.com: 404 Client Error: Not Found for url: https://readfullapi.herokuapp.com/novels/
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1312, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 723, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2335, in load_chapter
+    return self._load_mangadex_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2408, in _load_mangadex_chapter
+    raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
+RuntimeError: A API do MangaDex nao retornou paginas para este capitulo.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1312, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 723, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2335, in load_chapter
+    return self._load_mangadex_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2408, in _load_mangadex_chapter
+    raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
+RuntimeError: A API do MangaDex nao retornou paginas para este capitulo.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1312, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 723, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2335, in load_chapter
+    return self._load_mangadex_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2408, in _load_mangadex_chapter
+    raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
+RuntimeError: A API do MangaDex nao retornou paginas para este capitulo.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1312, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 723, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2335, in load_chapter
+    return self._load_mangadex_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2408, in _load_mangadex_chapter
+    raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
+RuntimeError: A API do MangaDex nao retornou paginas para este capitulo.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1312, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 723, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2335, in load_chapter
+    return self._load_mangadex_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2408, in _load_mangadex_chapter
+    raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
+RuntimeError: A API do MangaDex nao retornou paginas para este capitulo.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1312, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 723, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2335, in load_chapter
+    return self._load_mangadex_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2408, in _load_mangadex_chapter
+    raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
+RuntimeError: A API do MangaDex nao retornou paginas para este capitulo.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1312, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 723, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2335, in load_chapter
+    return self._load_mangadex_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2408, in _load_mangadex_chapter
+    raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
+RuntimeError: A API do MangaDex nao retornou paginas para este capitulo.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1312, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 723, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2335, in load_chapter
+    return self._load_mangadex_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2408, in _load_mangadex_chapter
+    raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
+RuntimeError: A API do MangaDex nao retornou paginas para este capitulo.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1312, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 723, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2335, in load_chapter
+    return self._load_mangadex_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2408, in _load_mangadex_chapter
+    raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
+RuntimeError: A API do MangaDex nao retornou paginas para este capitulo.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1312, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 723, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2335, in load_chapter
+    return self._load_mangadex_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2408, in _load_mangadex_chapter
+    raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
+RuntimeError: A API do MangaDex nao retornou paginas para este capitulo.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1330, in search_readfull
+    raw_items = self._readfull_paginated("/novels/", max_pages=10)
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 862, in _readfull_paginated
+    payload = self._readfull_get(next_path)
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 842, in _readfull_get
+    response.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python313\Lib\site-packages\requests\models.py", line 1026, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 404 Client Error: Not Found for url: https://readfullapi.herokuapp.com/novels/
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1312, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 567, in work
+    payload = self.reader.search_readfull(query, limit=15)
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1332, in search_readfull
+    raise RuntimeError(
+        f"API ReadFull indisponivel em {self.readfull_api_base_url}: {exc}"
+    ) from exc
+RuntimeError: API ReadFull indisponivel em https://readfullapi.herokuapp.com: 404 Client Error: Not Found for url: https://readfullapi.herokuapp.com/novels/
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1307, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 566, in work
+    payload = self.reader.search_manga(query, limit=15)
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1600, in search_manga
+    raise RuntimeError(f"Nao consegui buscar mangas. Detalhe: {last_error}")
+RuntimeError: Nao consegui buscar mangas. Detalhe: HTTPConnectionPool(host='localhost', port=3000): Max retries exceeded with url: /api/search/eatter?page=1 (Caused by NewConnectionError("HTTPConnection(host='localhost', port=3000): Failed to establish a new connection: [WinError 10061] Nenhuma conexão pôde ser feita porque a máquina de destino as recusou ativamente"))
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1532, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 754, in work
+    raise RuntimeError("Nenhum capitulo selecionado.")
+RuntimeError: Nenhum capitulo selecionado.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1532, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 739, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2759, in load_chapter
+    return self._load_mangadex_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2899, in _load_mangadex_chapter
+    raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
+RuntimeError: A API do MangaDex nao retornou paginas para este capitulo.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1532, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 739, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2759, in load_chapter
+    return self._load_mangadex_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2899, in _load_mangadex_chapter
+    raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
+RuntimeError: A API do MangaDex nao retornou paginas para este capitulo.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1532, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 739, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2762, in load_chapter
+    return self._load_mangadex_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2907, in _load_mangadex_chapter
+    raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
+RuntimeError: A API do MangaDex nao retornou paginas para este capitulo.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1532, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 739, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2762, in load_chapter
+    return self._load_mangadex_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2907, in _load_mangadex_chapter
+    raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
+RuntimeError: A API do MangaDex nao retornou paginas para este capitulo.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1745, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 939, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2762, in load_chapter
+    return self._load_mangadex_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2907, in _load_mangadex_chapter
+    raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
+RuntimeError: A API do MangaDex nao retornou paginas para este capitulo.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1745, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 939, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2762, in load_chapter
+    return self._load_mangadex_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2907, in _load_mangadex_chapter
+    raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
+RuntimeError: A API do MangaDex nao retornou paginas para este capitulo.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1745, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 939, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2762, in load_chapter
+    return self._load_mangadex_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2907, in _load_mangadex_chapter
+    raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
+RuntimeError: A API do MangaDex nao retornou paginas para este capitulo.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1744, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 758, in work
+    hit = self._race_manga_request(query, lang, search_limit=15, load_chapters=False)
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 679, in _race_manga_request
+    raise RuntimeError(f"Nenhuma fonte retornou {action} para: {query}. {detail}")
+RuntimeError: Nenhuma fonte retornou resultados para: chainsaw man. MangaDex: sem resultado relevante; ReadFull: sem resultado relevante; MangaFire: sem resultado relevante
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1744, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 939, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2762, in load_chapter
+    return self._load_mangadex_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2907, in _load_mangadex_chapter
+    raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
+RuntimeError: A API do MangaDex nao retornou paginas para este capitulo.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1744, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 939, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2762, in load_chapter
+    return self._load_mangadex_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 2907, in _load_mangadex_chapter
+    raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
+RuntimeError: A API do MangaDex nao retornou paginas para este capitulo.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1849, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1072, in work
+    raise RuntimeError("Nenhum capitulo selecionado.")
+RuntimeError: Nenhum capitulo selecionado.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1849, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 863, in work
+    hit = self._race_manga_request(query, lang, search_limit=15, load_chapters=False)
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 782, in _race_manga_request
+    raise RuntimeError(f"Nenhuma fonte retornou {action} para: {query}. {detail}")
+RuntimeError: Nenhuma fonte retornou resultados para: duas irmãs e eu. MangaDex: sem resultado relevante; ReadFull: sem resultado relevante
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1849, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 863, in work
+    hit = self._race_manga_request(query, lang, search_limit=15, load_chapters=False)
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 782, in _race_manga_request
+    raise RuntimeError(f"Nenhuma fonte retornou {action} para: {query}. {detail}")
+RuntimeError: Nenhuma fonte retornou resultados para: duas irmãs e eu. MangaDex: sem resultado relevante; ReadFull: sem resultado relevante
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1888, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1111, in work
+    raise RuntimeError("Nenhum capitulo selecionado.")
+RuntimeError: Nenhum capitulo selecionado.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 2050, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1064, in work
+    hit = self._race_manga_request(query, lang, search_limit=15, load_chapters=True)
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 979, in _race_manga_request
+    raise RuntimeError(f"Nenhuma fonte retornou {action} para: {query}. {detail}")
+RuntimeError: Nenhuma fonte retornou capitulos para: alice, a insuportavel. ReadFull: sem resultado relevante; MangaKatana: sem resultado relevante; Toomics: sem resultado relevante; MangaDex: sem resultado relevante
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 2050, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1064, in work
+    hit = self._race_manga_request(query, lang, search_limit=15, load_chapters=True)
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 979, in _race_manga_request
+    raise RuntimeError(f"Nenhuma fonte retornou {action} para: {query}. {detail}")
+RuntimeError: Nenhuma fonte retornou capitulos para: duas irmãs e eu. ReadFull: sem resultado relevante; MangaDex: sem resultado relevante; MangaKatana: sem resultado relevante; Toomics: sem resultado relevante
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 2050, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1245, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 4940, in load_chapter
+    return self._load_toomics_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1806, in _load_toomics_chapter
+    raise RuntimeError(
+    ...<2 lines>...
+    )
+RuntimeError: Este episodio do Toomics parece exigir login, VIP ou moedas; o leitor so carrega episodios que a pagina publica entrega.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 2050, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1245, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 4940, in load_chapter
+    return self._load_toomics_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1806, in _load_toomics_chapter
+    raise RuntimeError(
+    ...<2 lines>...
+    )
+RuntimeError: Este episodio do Toomics parece exigir login, VIP ou moedas; o leitor so carrega episodios que a pagina publica entrega.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 2079, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1245, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 4943, in load_chapter
+    return self._load_toomics_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1806, in _load_toomics_chapter
+    raise RuntimeError(
+    ...<2 lines>...
+    )
+RuntimeError: Este episodio do Toomics parece exigir login, VIP ou moedas; o leitor so carrega episodios que a pagina publica entrega.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 2079, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1245, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 4943, in load_chapter
+    return self._load_toomics_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1806, in _load_toomics_chapter
+    raise RuntimeError(
+    ...<2 lines>...
+    )
+RuntimeError: Este episodio do Toomics parece exigir login, VIP ou moedas; o leitor so carrega episodios que a pagina publica entrega.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 2079, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1245, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 4967, in load_chapter
+    return self._load_toomics_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1822, in _load_toomics_chapter
+    raise RuntimeError(
+    ...<2 lines>...
+    )
+RuntimeError: Este episodio do Toomics parece exigir login, VIP ou moedas; o leitor so carrega episodios que a pagina publica entrega.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 2079, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1245, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 4967, in load_chapter
+    return self._load_toomics_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1822, in _load_toomics_chapter
+    raise RuntimeError(
+    ...<2 lines>...
+    )
+RuntimeError: Este episodio do Toomics parece exigir login, VIP ou moedas; o leitor so carrega episodios que a pagina publica entrega.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 2079, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1245, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 4967, in load_chapter
+    return self._load_toomics_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1822, in _load_toomics_chapter
+    raise RuntimeError(
+    ...<2 lines>...
+    )
+RuntimeError: Este episodio do Toomics parece exigir login, VIP ou moedas; o leitor so carrega episodios que a pagina publica entrega.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 2079, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1245, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 4967, in load_chapter
+    return self._load_toomics_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1822, in _load_toomics_chapter
+    raise RuntimeError(
+    ...<2 lines>...
+    )
+RuntimeError: Este episodio do Toomics parece exigir login, VIP ou moedas; o leitor so carrega episodios que a pagina publica entrega.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 2079, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1245, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 4967, in load_chapter
+    return self._load_toomics_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1822, in _load_toomics_chapter
+    raise RuntimeError(
+    ...<2 lines>...
+    )
+RuntimeError: Este episodio do Toomics parece exigir login, VIP ou moedas; o leitor so carrega episodios que a pagina publica entrega.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 2079, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1245, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 4967, in load_chapter
+    return self._load_toomics_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1822, in _load_toomics_chapter
+    raise RuntimeError(
+    ...<2 lines>...
+    )
+RuntimeError: Este episodio do Toomics parece exigir login, VIP ou moedas; o leitor so carrega episodios que a pagina publica entrega.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 2079, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1064, in work
+    hit = self._race_manga_request(query, lang, search_limit=15, load_chapters=True)
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 979, in _race_manga_request
+    raise RuntimeError(f"Nenhuma fonte retornou {action} para: {query}. {detail}")
+RuntimeError: Nenhuma fonte retornou capitulos para: eu roubei a arma do primeiro colocado. ReadFull: sem resultado relevante; MangaKatana: sem resultado relevante; MangaDex: sem resultado relevante; Toomics: sem resultado relevante
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 2079, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1245, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 4967, in load_chapter
+    return self._load_toomics_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1822, in _load_toomics_chapter
+    raise RuntimeError(
+    ...<2 lines>...
+    )
+RuntimeError: Este episodio do Toomics parece exigir login, VIP ou moedas; o leitor so carrega episodios que a pagina publica entrega.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 2079, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1064, in work
+    hit = self._race_manga_request(query, lang, search_limit=15, load_chapters=True)
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 979, in _race_manga_request
+    raise RuntimeError(f"Nenhuma fonte retornou {action} para: {query}. {detail}")
+RuntimeError: Nenhuma fonte retornou capitulos para: eu roubei a arma do 1ª colocado. ReadFull: sem resultado relevante; MangaKatana: sem resultado relevante; Toomics: sem resultado relevante; MangaDex: sem resultado relevante
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 2079, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1064, in work
+    hit = self._race_manga_request(query, lang, search_limit=15, load_chapters=True)
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 979, in _race_manga_request
+    raise RuntimeError(f"Nenhuma fonte retornou {action} para: {query}. {detail}")
+RuntimeError: Nenhuma fonte retornou capitulos para: eu roubei a arma do 1ª colocado. ReadFull: sem resultado relevante; MangaKatana: sem resultado relevante; Toomics: sem resultado relevante; MangaDex: sem resultado relevante
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 2094, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1245, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 4968, in load_chapter
+    return self._load_toomics_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1822, in _load_toomics_chapter
+    raise RuntimeError(
+    ...<2 lines>...
+    )
+RuntimeError: Este episodio do Toomics parece exigir login, VIP ou moedas; o leitor so carrega episodios que a pagina publica entrega.
+
+--- erro ---
+Traceback (most recent call last):
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 2094, in runner
+    result = work()
+  File "c:\Users\User\Documents\scrapper manga\reader_app.py", line 1245, in work
+    return None, self.reader.load_chapter(selected_url), None
+                 ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 4968, in load_chapter
+    return self._load_toomics_chapter(url)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "c:\Users\User\Documents\scrapper manga\reader_server.py", line 1822, in _load_toomics_chapter
+    raise RuntimeError(
+    ...<2 lines>...
+    )
+RuntimeError: Este episodio do Toomics parece exigir login, VIP ou moedas; o leitor so carrega episodios que a pagina publica entrega.
