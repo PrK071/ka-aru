@@ -44,37 +44,103 @@ except Exception:
     PlaywrightTimeoutError = TimeoutError
     sync_playwright = None
 
-from mangafire_scraper import (
-    Chapter,
-    BASE_URL,
-    DEFAULT_HEADERS,
-    build_driver,
-    chapter_images_api_url,
-    chapter_list_api_url,
-    chapter_url_from_number,
-    chapter_number_from_url,
-    chapter_number_text_from_url,
-    clean_filename,
-    clear_resource_timings,
-    create_cloudscraper,
-    extract_chapters_from_payload,
-    extract_image_urls,
-    fetch_chapter_images_http,
-    fetch_chapters_http,
-    filename_from_url,
-    format_chapter_number,
-    is_chapter_list_api,
-    is_image_list_api,
-    manga_page_url,
-    normalize_lang,
-    request_json,
-    resource_urls,
-    session_from_driver,
-    session_from_scraper,
-    slug_from_url,
-    wait_for_resource_url,
-)
-from mangafire_vrf import generate_vrf
+
+@dataclass
+class Chapter:
+    url: str
+    label: str
+    number: float | None = None
+    number_text: str | None = None
+    chapter_id: str | None = None
+    title: str | None = None
+
+
+DEFAULT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+}
+
+
+def normalize_lang(value: str | None) -> str:
+    text = (value or "pt-br").strip().lower().replace("_", "-")
+    aliases = {
+        "pt": "pt-br",
+        "ptbr": "pt-br",
+        "pt-br": "pt-br",
+        "br": "pt-br",
+        "en-us": "en",
+        "en-gb": "en",
+    }
+    return aliases.get(text, text or "pt-br")
+
+
+def clean_filename(value: str | None, fallback: str = "item") -> str:
+    text = unicodedata.normalize("NFKD", value or "").encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"[<>:\"/\\|?*\x00-\x1f]+", "-", text)
+    text = re.sub(r"\s+", "-", text).strip("-. ")
+    return text[:150] or fallback
+
+
+def format_chapter_number(value: float | int | str | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value).strip() or None
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:g}"
+
+
+def chapter_number_text_from_url(url: str) -> str | None:
+    parsed = urlparse(url or "")
+    text = unquote(f"{parsed.path}/{parsed.query}")
+    patterns = (
+        r"(?:capitulo|capítulo|chapter|chap|ep(?:isode)?)[-/_.\s]*(\d+(?:[.,]\d+)?)",
+        r"(?:^|[-_/])(\d+(?:[.,]\d+)?)(?:[-_/]|$)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1).replace(",", ".")
+    return None
+
+
+def chapter_number_from_url(url: str) -> float | None:
+    text = chapter_number_text_from_url(url)
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def slug_from_url(url: str) -> str | None:
+    text = (url or "").strip()
+    if not text:
+        return None
+    parsed = urlparse(text if re.match(r"^[a-z]+://", text, re.IGNORECASE) else f"source:///{text}")
+    parts = [unquote(part) for part in parsed.path.split("/") if part]
+    for marker in ("manga", "title", "webtoon", "novel"):
+        if marker in parts:
+            index = parts.index(marker)
+            if index + 1 < len(parts):
+                return parts[index + 1]
+    return parts[-1] if parts else text
+
+
+def filename_from_url(url: str, index: int, content_type: str | None = None) -> str:
+    suffix = Path(unquote(urlparse(url).path)).suffix.lower()
+    if not suffix or len(suffix) > 8:
+        suffix = mimetypes.guess_extension(content_type or "") or ".jpg"
+    return f"{index:04d}{suffix}"
 
 MANGADEX_API_URL = "https://api.mangadex.org"
 MANGADEX_UPLOADS_URL = "https://uploads.mangadex.org"
@@ -824,77 +890,6 @@ class ChapterState:
     source_image_chunks: list[list[str]] = field(default_factory=list)
 
 
-class MangaSearchParser(HTMLParser):
-    def __init__(self, limit: int = 12) -> None:
-        super().__init__(convert_charrefs=True)
-        self.limit = limit
-        self.results: list[dict] = []
-        self._seen: set[str] = set()
-        self._current: dict | None = None
-        self._text: list[str] = []
-        self._in_title = False
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        tag_name = tag.lower()
-        if self._current is not None and tag_name in {"h3", "h4", "h5", "h6"}:
-            self._in_title = True
-            return
-
-        if self._current is not None and tag_name == "img":
-            data = {name.lower(): value for name, value in attrs if value is not None}
-            self._current["title"] = self._current["title"] or data.get("alt") or ""
-            return
-
-        if tag_name != "a" or len(self.results) >= self.limit:
-            return
-
-        data = {name.lower(): value for name, value in attrs if value is not None}
-        href = data.get("href") or ""
-        if "/manga/" not in href:
-            return
-
-        url = urljoin(BASE_URL, href)
-        if url in self._seen:
-            return
-
-        self._current = {
-            "url": url,
-            "title": data.get("title") or "",
-        }
-        self._text = []
-        self._in_title = False
-
-    def handle_data(self, data: str) -> None:
-        if self._current is not None:
-            text = data.strip()
-            if text:
-                if self._in_title and not self._current["title"]:
-                    self._current["title"] = text
-                self._text.append(text)
-
-    def handle_endtag(self, tag: str) -> None:
-        tag_name = tag.lower()
-        if tag_name in {"h3", "h4", "h5", "h6"}:
-            self._in_title = False
-            return
-
-        if tag_name != "a" or self._current is None:
-            return
-
-        text = " ".join(self._text).strip()
-        title = self._current["title"] or text
-        url = self._current["url"]
-        self._current = None
-        self._text = []
-        self._in_title = False
-
-        if not title or url in self._seen:
-            return
-
-        self._seen.add(url)
-        self.results.append({"title": title, "url": url})
-
-
 class TextExtractor(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -995,7 +990,7 @@ def first_match(pattern: str, text: str, flags: int = re.IGNORECASE | re.DOTALL)
 
 class TemporaryChapterCache:
     def __init__(self) -> None:
-        self.root = Path(tempfile.mkdtemp(prefix="mangafire-reader-"))
+        self.root = Path(tempfile.mkdtemp(prefix="mangatemp-reader-"))
         self.current_dir: Path | None = None
 
     def new_chapter_dir(self, label: str) -> Path:
@@ -1023,14 +1018,13 @@ class TemporaryChapterCache:
             return False
 
 
-class MangaFireReader:
+class MangaReader:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.cache = TemporaryChapterCache()
         self.driver = None
         self.state: ChapterState | None = None
         self.lock = threading.RLock()
-        self.api_base_url = ""
         self.readfull_api_base_url = (
             getattr(args, "readfull_api_url", None)
             or os.environ.get("READFULL_API_URL")
@@ -1056,15 +1050,12 @@ class MangaFireReader:
             or os.environ.get("MANGALIVRE_BASE_URL")
             or DEFAULT_MANGALIVRE_BASE_URL
         ).rstrip("/")
-        self.use_api = False
-        self.api_chapter_ids_by_url: dict[str, str] = {}
         self._pieceproject_cache: tuple[float, list[dict]] | None = None
         self._toomics_chapters_cache: dict[tuple[str, str, str], tuple[float, list[Chapter], dict]] = {}
         self._mangalivre_chapters_cache: dict[str, tuple[float, list[Chapter]]] = {}
         self._mangasbrasuka_page_images_cache: dict[str, tuple[float, list[str]]] = {}
         self._mangadex_tag_ids_cache: dict[str, str] | None = None
         self._cloudscraper: cloudscraper.CloudScraper | None = None
-        self._last_mangafire_chapters_provider: str | None = None
         atexit.register(self.close)
 
     def _mangadex_get(self, path: str, params: dict | None = None):
@@ -1074,7 +1065,7 @@ class MangaFireReader:
             timeout=self.args.timeout,
             headers={
                 "Accept": "application/json",
-                "User-Agent": DEFAULT_HEADERS["User-Agent"],
+                "User-Agent": "MangaTempReader/0.2 (local personal reader)",
             },
         )
         response.raise_for_status()
@@ -3069,12 +3060,15 @@ class MangaFireReader:
                 if image_url:
                     images_by_url[chapter_url] = image_url
 
-        return [
+        image_urls = [
             image_url
             for chapter in ordered
             for image_url in [images_by_url.get(chapter.url)]
             if image_url
         ]
+        image_urls = list(dict.fromkeys(image_urls))
+        self._mangasbrasuka_page_images_cache[cache_key] = (time.time(), image_urls)
+        return list(image_urls)
 
     def _load_mangasbrasuka_chapter(self, url: str) -> dict:
         with self.lock:
@@ -3114,9 +3108,11 @@ class MangaFireReader:
             except Exception:
                 pass
 
-            if not img_url:
+            image_urls = self._mangasbrasuka_page_images_from_chapters(chapters, manga_url) if chapters else []
+            if not image_urls and img_url:
+                image_urls = [img_url]
+            if not image_urls:
                 raise RuntimeError("O MangasBrasuka nao retornou imagens para este capitulo.")
-            image_urls = [img_url]
 
             number_text = self._mangasbrasuka_chapter_number(chapter_slug)
             label = self._mangasbrasuka_chapter_label(manga_slug, chapter_slug)
@@ -3606,126 +3602,17 @@ class MangaFireReader:
         }
 
     def get_driver(self):
-        if self.driver is None:
-            driver_args = SimpleNamespace(
-                librewolf_path=self.args.librewolf_path,
-                show_browser=self.args.show_browser,
-                timeout=self.args.timeout,
-            )
-            self.driver = build_driver(driver_args)
-        return self.driver
+        raise RuntimeError(
+            "Driver Selenium legado removido. Use as fontes ativas: MangaDex, MangaLivre, "
+            "MangasBrasuka, Toomics, One Piece Project, DragonTea, MangaKatana, ReadFull ou NovelToon."
+        )
 
     def _get_cloudscraper(self) -> cloudscraper.CloudScraper:
         if self._cloudscraper is None:
-            self._cloudscraper = create_cloudscraper()
+            self._cloudscraper = cloudscraper.create_scraper(
+                browser={"browser": "chrome", "platform": "windows", "mobile": False}
+            )
         return self._cloudscraper
-
-    def _ensure_async_loop(self) -> asyncio.AbstractEventLoop:
-        if getattr(self, "_async_loop", None) is not None:
-            return self._async_loop 
-
-        loop = asyncio.new_event_loop()
-        self._async_loop: asyncio.AbstractEventLoop = loop
-        self._async_curl_session = None 
-
-        def _run_loop() -> None:
-            asyncio.set_event_loop(loop)
-            loop.run_forever()
-
-        t = threading.Thread(target=_run_loop, daemon=True, name="mangafire-async-loop")
-        t.start()
-        self._async_loop_thread = t
-        return loop
-
-    def _run_async(self, awaitable):
-        loop = self._ensure_async_loop()
-        future = asyncio.run_coroutine_threadsafe(awaitable, loop)
-        return future.result()
-
-    async def _get_curl_session(self) -> "curl_requests.AsyncSession":
-        if getattr(self, "_async_curl_session", None) is None:
-            self._async_curl_session = curl_requests.AsyncSession(impersonate="chrome")
-            self._async_curl_session.headers.update(DEFAULT_HEADERS)
-        return self._async_curl_session 
-
-    async def _mangafire_async_get(self, url: str, referer: str, **kwargs):
-        if curl_requests is None:
-            raise RuntimeError("curl_cffi nao esta instalado.")
-
-        headers = dict(DEFAULT_HEADERS)
-        headers.update({"Referer": referer, "Origin": BASE_URL})
-        headers.update(kwargs.pop("headers", {}) or {})
-        timeout = kwargs.pop("timeout", self.args.timeout)
-
-        session = await self._get_curl_session()
-        return await session.get(url, timeout=timeout, headers=headers, **kwargs)
-
-    async def _mangafire_async_json(
-        self, url: str, referer: str, timeout: int | float | None = None
-    ) -> dict:
-        response = await self._mangafire_async_get(
-            url,
-            referer,
-            timeout=timeout or self.args.timeout,
-            headers={
-                "Accept": "application/json, text/javascript, */*; q=0.01",
-                "X-Requested-With": "XMLHttpRequest",
-            },
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if payload.get("status") != 200:
-            message = payload.get("message") or payload.get("messages") or payload
-            raise RuntimeError(f"Resposta invalida do MangaFire: {message}")
-        return payload
-
-    async def _mangafire_async_fetch_chapters(self, source_url: str, lang: str) -> list[Chapter]:
-        slug = slug_from_url(source_url)
-        if not slug:
-            raise ValueError("Informe uma URL do MangaFire.")
-        normalized_lang = normalize_lang(lang or "pt-br")
-        api_url, referer = chapter_list_api_url(slug, normalized_lang)
-        payload = await self._mangafire_async_json(api_url, referer, self.args.timeout)
-        chapters = extract_chapters_from_payload(payload)
-        if not chapters:
-            raise RuntimeError("A lista de capitulos veio vazia.")
-        return chapters
-
-    async def _mangafire_async_search_and_chapters(
-        self,
-        search_url: str,
-        search_params: dict,
-        chapters_source_url: str,
-        lang: str,
-    ) -> tuple[object, list[Chapter]]:
-        search_task = self._mangafire_async_get(
-            search_url,
-            f"{BASE_URL}/",
-            params=search_params,
-            timeout=self.args.timeout,
-        )
-        chapters_task = self._mangafire_async_fetch_chapters(chapters_source_url, lang)
-        return await asyncio.gather(search_task, chapters_task, return_exceptions=True)
-
-    def _mangafire_curl_get(self, url: str, referer: str, **kwargs):
-        return self._run_async(self._mangafire_async_get(url, referer, **kwargs))
-
-    def _mangafire_curl_json(self, url: str, referer: str, timeout: int | float | None = None) -> dict:
-        response = self._mangafire_curl_get(
-            url,
-            referer,
-            timeout=timeout or self.args.timeout,
-            headers={
-                "Accept": "application/json, text/javascript, */*; q=0.01",
-                "X-Requested-With": "XMLHttpRequest",
-            },
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if payload.get("status") != 200:
-            message = payload.get("message") or payload.get("messages") or payload
-            raise RuntimeError(f"Resposta invalida do MangaFire: {message}")
-        return payload
 
     def close_chapter(self) -> None:
         with self.lock:
@@ -3760,107 +3647,6 @@ class MangaFireReader:
             except Exception:
                 pass
             self._async_loop = None
-
-    def external_api_available(self) -> bool:
-        if not self.use_api:
-            return False
-        try:
-            response = requests.get(
-                self.api_base_url.removesuffix("/api") or self.api_base_url,
-                timeout=min(3, self.args.timeout),
-            )
-            return response.status_code < 500
-        except Exception:
-            return False
-
-    def _search_timeout(self) -> int:
-        try:
-            configured = int(self.args.timeout)
-        except (TypeError, ValueError):
-            configured = SEARCH_TIMEOUT_SECONDS
-        return max(2, min(SEARCH_TIMEOUT_SECONDS, configured))
-
-    def _remaining_search_timeout(self, deadline: float) -> int:
-        remaining = int(deadline - time.time())
-        return max(1, min(self._search_timeout(), remaining))
-
-    def _api_get(self, path: str, params: dict | None = None, timeout: int | None = None):
-        if not self.use_api:
-            raise RuntimeError("API externa do MangaFire desativada.")
-
-        url = f"{self.api_base_url}{path}"
-        is_local = "localhost" in url or "127.0.0.1" in url
-        req_timeout = (1.5, 3.0) if is_local else (timeout or self.args.timeout)
-        response = requests.get(
-            url,
-            params=params,
-            timeout=req_timeout,
-            headers={"Accept": "application/json"},
-        )
-        response.raise_for_status()
-        return response.json()
-
-    def _api_error_message(self, exc: Exception) -> str:
-        return f"API externa do MangaFire indisponivel em {self.api_base_url}: {exc}"
-
-    def _api_list(self, payload) -> list:
-        if isinstance(payload, list):
-            return payload
-        if not isinstance(payload, dict):
-            return []
-        for key in ("results", "data", "manga", "mangas", "items", "chapters", "images"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                return value
-        return []
-
-    def _search_manga_via_api(self, keyword: str, limit: int = 12, timeout: int | None = None) -> dict:
-        scan_limit = max(limit * 4, 20)
-        payload = self._api_get(
-            f"/search/{quote(keyword, safe='')}",
-            {"page": 1},
-            timeout=timeout,
-        )
-        results: list[dict] = []
-        seen: set[str] = set()
-
-        for item in self._api_list(payload):
-            if not isinstance(item, dict):
-                continue
-            title = self._first_text(item, "title", "name", "mangaTitle")
-            url = self._first_text(item, "url", "link", "href")
-            manga_id = self._first_text(item, "id", "mangaId", "slug")
-
-            if not url and manga_id:
-                url = manga_page_url(manga_id)
-            if url:
-                url = urljoin(BASE_URL, url)
-                manga_id = manga_id or slug_from_url(url)
-            if not title or not url or url in seen:
-                continue
-
-            seen.add(url)
-            results.append(
-                {
-                    "title": title,
-                    "url": url,
-                    "id": manga_id,
-                    "poster": self._first_text(item, "poster", "image", "cover", "thumbnail"),
-                }
-            )
-            if len(results) >= scan_limit:
-                break
-
-        results = self._rank_search_results(keyword, results, limit)
-
-        return {
-            "ok": True,
-            "provider": "mangafire-api",
-            "api_url": self.api_base_url,
-            "keyword": keyword,
-            "count": len(results),
-            "results": results,
-        }
 
     def search_mangadex(self, keyword: str, limit: int = 12) -> dict:
         scan_limit = min(max(limit * 4, 20), 100)
@@ -3923,16 +3709,18 @@ class MangaFireReader:
 
     def trending_mangadex(self, limit: int = 12) -> dict:
         scan_limit = min(max(limit, 4), 100)
-        payload = self._mangadex_get(
-            "/manga",
-            {
-                "limit": scan_limit,
-                "includes[]": ["cover_art", "author", "artist"],
-                "contentRating[]": ["safe"],
-                "status[]": ["ongoing"],
-                "order[followedCount]": "desc",
-            },
-        )
+        params = {
+            "limit": scan_limit,
+            "includes[]": ["cover_art", "author", "artist"],
+            "contentRating[]": ["safe"],
+            "status[]": ["ongoing"],
+            "order[latestUploadedChapter]": "desc",
+        }
+        try:
+            payload = self._mangadex_get("/manga", params)
+        except requests.HTTPError:
+            params.pop("order[latestUploadedChapter]", None)
+            payload = self._mangadex_get("/manga", params)
         results: list[dict] = []
         for item in payload.get("data", []):
             if not isinstance(item, dict):
@@ -4498,340 +4286,44 @@ class MangaFireReader:
         seen: set[str] = set()
         last_error: Exception | None = None
         had_success = False
-        result_provider: str | None = None
-        search_terms = self._search_keyword_variants(keyword)
-        try:
-            configured_timeout = int(getattr(self.args, "timeout", SEARCH_TOTAL_TIMEOUT_SECONDS))
-        except (TypeError, ValueError):
-            configured_timeout = SEARCH_TOTAL_TIMEOUT_SECONDS
-        search_deadline = time.time() + min(SEARCH_TOTAL_TIMEOUT_SECONDS, max(2, configured_timeout))
+        providers = (
+            ("mangasbrasuka", lambda term: self.search_mangasbrasuka(term, scan_limit)),
+            ("mangalivre", lambda term: self.search_mangalivre(term, scan_limit)),
+            ("mangadex", lambda term: self.search_mangadex(term, scan_limit)),
+            ("toomics", lambda term: self.search_toomics(term, scan_limit, lang="pt-br")),
+        )
 
-        if self.use_api:
-            for search_term in search_terms:
-                if time.time() >= search_deadline:
-                    break
+        for search_term in self._search_keyword_variants(keyword):
+            for provider, callback in providers:
                 try:
-                    payload = self._search_manga_via_api(
-                        search_term,
-                        scan_limit,
-                        self._remaining_search_timeout(search_deadline),
-                    )
+                    payload = callback(search_term)
                     had_success = True
                     previous_count = len(results)
-                    self._add_unique_search_results(
-                        results,
-                        seen,
-                        payload.get("results") or [],
-                        scan_limit,
-                    )
-                    if len(results) > previous_count:
-                        result_provider = str(payload.get("provider") or "mangafire-api")
+                    source_results = payload.get("results") if isinstance(payload, dict) else []
+                    for item in source_results or []:
+                        if isinstance(item, dict):
+                            item.setdefault("provider", provider)
+                            item.setdefault("source", provider)
+                    self._add_unique_search_results(results, seen, source_results or [], scan_limit)
+                    if len(results) >= limit and len(results) > previous_count:
+                        break
                 except Exception as exc:
                     last_error = exc
                     continue
-                if len(results) > 0:
-                    break
-
-        if not results:
-            for search_term in search_terms:
-                if time.time() >= search_deadline:
-                    break
-                try:
-                    vrf = generate_vrf(search_term)
-                    response = self._mangafire_curl_get(
-                        f"{BASE_URL}/filter",
-                        f"{BASE_URL}/",
-                        params={
-                            "keyword": search_term,
-                            "page": 1,
-                            "vrf": vrf,
-                        },
-                        timeout=self._remaining_search_timeout(search_deadline),
-                    )
-                    response.raise_for_status()
-                    had_success = True
-                    found = self._extract_search_results(response, scan_limit)
-                    result_provider_candidate = "mangafire-curl_cffi"
-                except Exception as exc:
-                    last_error = exc
-                    try:
-                        scraper = self._get_cloudscraper()
-                        vrf = generate_vrf(search_term)
-                        response = scraper.get(
-                            f"{BASE_URL}/filter",
-                            params={
-                                "keyword": search_term,
-                                "page": 1,
-                                "vrf": vrf,
-                            },
-                            timeout=self._remaining_search_timeout(search_deadline),
-                            headers={"Referer": f"{BASE_URL}/"},
-                        )
-                        response.raise_for_status()
-                        had_success = True
-                        found = self._extract_search_results(response, scan_limit)
-                        result_provider_candidate = "mangafire-cloudscraper"
-                    except requests.HTTPError as exc:
-                        last_error = exc
-                        continue
-                    except Exception as exc:
-                        last_error = exc
-                        continue
-                previous_count = len(results)
-                self._add_unique_search_results(results, seen, found, scan_limit)
-                if len(results) > previous_count:
-                    result_provider = result_provider_candidate
-                if len(results) > 0:
-                    break
-
-        if len(results) == 0:
-            try:
-                with self.lock:
-                    for search_term in self._browser_search_terms(keyword):
-                        found = self._search_manga_with_driver(
-                            search_term,
-                            max(scan_limit, 30),
-                            timeout=SEARCH_BROWSER_TIMEOUT_SECONDS,
-                        )
-                        previous_count = len(results)
-                        self._add_unique_search_results(results, seen, found, max(scan_limit, 30))
-                        if len(results) > previous_count:
-                            result_provider = "mangafire-browser"
-                        if len(results) > 0:
-                            break
-                had_success = True
-            except Exception as exc:
-                last_error = exc
+            if len(results) >= limit:
+                break
 
         if not results and last_error and not had_success:
             raise RuntimeError(f"Nao consegui buscar mangas. Detalhe: {last_error}")
 
+        ranked = self._rank_search_results(keyword, results, limit)
         return {
             "ok": True,
-            "provider": result_provider or "mangafire",
+            "provider": "multi-source",
             "keyword": keyword,
-            "count": min(len(results), limit),
-            "results": self._rank_search_results(keyword, results, limit),
+            "count": len(ranked),
+            "results": ranked,
         }
-
-    def _extract_search_results(self, response: requests.Response, limit: int) -> list[dict]:
-        content_type = response.headers.get("Content-Type", "")
-        if "json" not in content_type.lower():
-            return self._extract_search_results_from_html(response.text, limit)
-
-        try:
-            payload = response.json()
-        except ValueError:
-            return self._extract_search_results_from_html(response.text, limit)
-
-        results: list[dict] = []
-        self._walk_search_payload(payload, results, limit)
-        return results[:limit]
-
-    def _walk_search_payload(self, value, results: list[dict], limit: int) -> None:
-        if len(results) >= limit:
-            return
-
-        if isinstance(value, str):
-            if "/manga/" in value:
-                for item in self._extract_search_results_from_html(value, limit - len(results)):
-                    results.append(item)
-            return
-
-        if isinstance(value, list):
-            for item in value:
-                self._walk_search_payload(item, results, limit)
-                if len(results) >= limit:
-                    return
-            return
-
-        if not isinstance(value, dict):
-            return
-
-        possible_url = (
-            value.get("url")
-            or value.get("link")
-            or value.get("href")
-            or value.get("path")
-            or ""
-        )
-        possible_title = (
-            value.get("title")
-            or value.get("name")
-            or value.get("label")
-            or value.get("text")
-            or ""
-        )
-        if isinstance(possible_url, str) and "/manga/" in possible_url:
-            url = urljoin(BASE_URL, possible_url)
-            title = re.sub(r"\s+", " ", str(possible_title)).strip()
-            if title:
-                results.append({"title": title, "url": url})
-                if len(results) >= limit:
-                    return
-
-        for item in value.values():
-            self._walk_search_payload(item, results, limit)
-            if len(results) >= limit:
-                return
-
-    def _extract_search_results_from_html(self, html: str, limit: int) -> list[dict]:
-        parser = MangaSearchParser(limit=limit)
-        parser.feed(html)
-        return parser.results
-
-    def _search_manga_with_driver(self, keyword: str, limit: int, timeout: int | None = None) -> list[dict]:
-        driver = self.get_driver()
-        driver_timeout = timeout or self.args.timeout
-        try:
-            driver.set_page_load_timeout(driver_timeout + 2)
-        except Exception:
-            pass
-
-        try:
-            clear_resource_timings(driver)
-            try:
-                current_url = driver.current_url or ""
-            except Exception:
-                current_url = ""
-            if not current_url.startswith(BASE_URL):
-                driver.get(BASE_URL)
-
-            results: list[dict] = []
-            deadline = time.time() + driver_timeout
-            while time.time() < deadline:
-                try:
-                    search_input = driver.find_element("css selector", 'input[name="keyword"]')
-                    break
-                except Exception:
-                    time.sleep(0.25)
-            else:
-                return results
-
-            try:
-                driver.execute_script(
-                    """
-                    document.querySelectorAll('.suggestion').forEach((node) => {
-                        node.innerHTML = '';
-                    });
-                    """,
-                )
-            except Exception:
-                pass
-
-            clear_resource_timings(driver)
-            try:
-                driver.execute_script(
-                    """
-                    const input = arguments[0];
-                    input.focus();
-                    input.value = '';
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                    input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Backspace' }));
-                    """,
-                    search_input,
-                )
-            except Exception:
-                search_input.clear()
-            search_input.send_keys(keyword)
-
-            while time.time() < deadline:
-                try:
-                    suggestion_html = driver.find_element(
-                        "css selector",
-                        ".suggestion",
-                    ).get_attribute("innerHTML") or ""
-                except Exception:
-                    suggestion_html = ""
-
-                results = self._extract_search_results_from_html(suggestion_html, limit)
-                results = [
-                    item for item in results
-                    if self._search_result_score(keyword, item) >= 0.35
-                ]
-                if results:
-                    break
-                time.sleep(0.5)
-
-            if not results:
-                for url in reversed(resource_urls(driver)):
-                    if "/ajax/manga/search" not in url:
-                        continue
-                    session = session_from_driver(driver, BASE_URL)
-                    payload = request_json(session, url, BASE_URL, driver_timeout)
-                    results = self._search_payload_to_results(payload, limit)
-                    results = [
-                        item for item in results
-                        if self._search_result_score(keyword, item) >= 0.35
-                    ]
-                    if results:
-                        break
-
-            return self._rank_search_results(keyword, results, limit)
-        finally:
-            try:
-                driver.set_page_load_timeout(self.args.timeout + 20)
-            except Exception:
-                pass
-
-    def _search_payload_to_results(self, payload, limit: int) -> list[dict]:
-        results: list[dict] = []
-        self._walk_search_payload(payload, results, limit)
-        return results[:limit]
-
-    def _fetch_chapters_via_api(
-        self,
-        source_url: str,
-        lang: str,
-        preferred_chapter: str | None = None,
-    ) -> list[Chapter]:
-        slug = slug_from_url(source_url)
-        if not slug:
-            raise ValueError("Informe uma URL de manga ou capitulo do MangaFire.")
-
-        normalized_lang = normalize_lang(lang or "pt-br")
-        payload = self._api_get(
-            f"/manga/{quote(slug, safe='')}/chapters/{quote(normalized_lang, safe='')}"
-        )
-        raw_chapters = self._api_list(payload)
-        chapters: list[Chapter] = []
-
-        for item in raw_chapters:
-            if not isinstance(item, dict):
-                continue
-
-            number_text = self._first_text(item, "number", "number_text", "chapterNumber")
-            title = self._first_text(item, "title", "name")
-            chapter_id = self._first_text(item, "chapterId", "chapter_id", "id")
-            url = self._first_text(item, "url", "link", "href")
-
-            if not number_text and title:
-                number_text = first_match(r"Chapter\s+([\d.]+)", title)
-            if not url and number_text:
-                url = chapter_url_from_number(slug, normalized_lang, number_text)
-            if not url:
-                continue
-
-            url = urljoin(BASE_URL, url)
-            chapter = Chapter(
-                url=url,
-                number=parse_float(number_text),
-                number_text=number_text,
-                chapter_id=chapter_id,
-                title=title,
-            )
-            chapters.append(chapter)
-            if chapter_id:
-                self.api_chapter_ids_by_url[url] = chapter_id
-
-        chapters.sort(
-            key=lambda chapter: (
-                chapter.number is None,
-                chapter.number if chapter.number is not None else 0.0,
-            )
-        )
-        self._last_mangafire_chapters_provider = "mangafire-api"
-        return chapters
 
     def _fetch_mangadex_chapters(
         self,
@@ -4978,50 +4470,6 @@ class MangaFireReader:
                 if isinstance(relation_id, str):
                     return relation_id
         return None
-
-    def _chapter_id_for_url(self, url: str) -> str | None:
-        if url.startswith("api://chapter/"):
-            return url.removeprefix("api://chapter/")
-
-        mapped = self.api_chapter_ids_by_url.get(url)
-        if mapped:
-            return mapped
-
-        slug = slug_from_url(url)
-        number = chapter_number_from_url(url)
-        lang = self._lang_from_chapter_url(url)
-        if not slug or number is None or not lang:
-            return None
-
-        chapters = self._fetch_chapters_via_api(manga_page_url(slug), lang)
-        for chapter in chapters:
-            if chapter.number is not None and abs(chapter.number - number) < 0.0001:
-                return chapter.chapter_id
-        return None
-
-    def _lang_from_chapter_url(self, url: str) -> str | None:
-        match = re.search(r"mangafire\.to/read/[^/]+/([^/]+)/chapter-", url, re.IGNORECASE)
-        return normalize_lang(match.group(1)) if match else None
-
-    def _image_urls_from_api_payload(self, payload) -> list[str]:
-        values = self._api_list(payload)
-        if not values and isinstance(payload, dict):
-            nested = payload.get("result")
-            if isinstance(nested, dict):
-                values = self._api_list(nested)
-
-        urls: list[str] = []
-        for item in values:
-            if isinstance(item, str):
-                urls.append(item)
-            elif isinstance(item, list) and item and isinstance(item[0], str):
-                urls.append(item[0])
-            elif isinstance(item, dict):
-                value = self._first_text(item, "url", "src", "image", "link")
-                if value:
-                    urls.append(value)
-
-        return [urljoin(BASE_URL, url) for url in urls if url]
 
     def manga_metadata(
         self,
@@ -5244,48 +4692,10 @@ class MangaFireReader:
                 "chapters": chapters_payload.get("chapters", []),
             }
 
-        if self.use_api:
-            try:
-                return self._manga_metadata_via_api(
-                    source_url,
-                    lang,
-                    preferred_chapter,
-                    include_chapters,
-                )
-            except Exception:
-                pass
-
-        slug = slug_from_url(source_url)
-        if not slug:
-            raise ValueError("Informe uma URL de manga ou capitulo do MangaFire.")
-
-        manga_url = manga_page_url(slug)
-        response = self._get_cloudscraper().get(
-            manga_url,
-            timeout=self.args.timeout,
-            headers=DEFAULT_HEADERS,
+        raise ValueError(
+            "Fonte nao suportada. Use MangaDex, MangaLivre, MangasBrasuka, Toomics, "
+            "One Piece Project, DragonTea, MangaKatana, ReadFull ou NovelToon."
         )
-        response.raise_for_status()
-
-        manga = self._extract_manga_metadata(manga_url, response.text)
-        payload = {
-            "ok": True,
-            "provider": "mangafire",
-            "manga": manga,
-        }
-
-        if include_chapters:
-            chapters_payload = self.list_chapters(manga_url, lang, preferred_chapter)
-            payload.update(
-                {
-                    "language": normalize_lang(lang or "pt-br"),
-                    "chapter_count": chapters_payload["count"],
-                    "selected_chapter_url": chapters_payload.get("selected_url"),
-                    "chapters": chapters_payload["chapters"],
-                }
-            )
-
-        return payload
 
     def _mangadex_manga_metadata(
         self,
@@ -5365,126 +4775,6 @@ class MangaFireReader:
             )
         return result
 
-    def _manga_metadata_via_api(
-        self,
-        source_url: str,
-        lang: str = "pt-br",
-        preferred_chapter: str | None = None,
-        include_chapters: bool = True,
-    ) -> dict:
-        slug = slug_from_url(source_url)
-        if not slug:
-            raise ValueError("Informe uma URL de manga ou capitulo do MangaFire.")
-
-        raw = self._api_get(f"/manga/{quote(slug, safe='')}")
-        manga = self._normalize_api_manga(raw, slug)
-        payload = {
-            "ok": True,
-            "provider": "mangafire-api",
-            "api_url": self.api_base_url,
-            "manga": manga,
-        }
-
-        try:
-            languages_payload = self._api_get(f"/manga/{quote(slug, safe='')}/chapters")
-            languages = self._normalize_api_languages(languages_payload)
-            if languages:
-                payload["manga"]["languages"] = languages
-        except Exception:
-            pass
-
-        if include_chapters:
-            chapters_payload = self.list_chapters(manga_page_url(slug), lang, preferred_chapter)
-            payload.update(
-                {
-                    "language": normalize_lang(lang or "pt-br"),
-                    "chapter_count": chapters_payload["count"],
-                    "selected_chapter_url": chapters_payload.get("selected_url"),
-                    "chapters": chapters_payload["chapters"],
-                }
-            )
-
-        return payload
-
-    def _normalize_api_manga(self, payload, slug: str) -> dict:
-        data = payload
-        if isinstance(payload, dict):
-            for key in ("data", "manga", "result"):
-                if isinstance(payload.get(key), dict):
-                    data = payload[key]
-                    break
-        if not isinstance(data, dict):
-            data = {}
-
-        title = self._first_text(data, "title", "name", "mangaTitle")
-        poster = self._first_text(data, "poster", "image", "cover", "thumbnail")
-        description = self._first_text(data, "description", "synopsis", "summary")
-        status = self._first_text(data, "status")
-        manga_type = self._first_text(data, "type", "category")
-
-        return {
-            "slug": slug,
-            "url": manga_page_url(slug),
-            "title": title,
-            "alternative_title": self._first_text(data, "alternativeTitle", "altTitle", "otherName"),
-            "status": status,
-            "type": manga_type,
-            "poster": urljoin(BASE_URL, poster) if poster else None,
-            "description": description,
-            "latest_chapter": self._first_text(data, "latestChapter", "latest_chapter"),
-            "authors": self._normalize_string_list(data.get("authors") or data.get("author")),
-            "genres": self._normalize_string_list(data.get("genres") or data.get("genre")),
-            "magazines": self._normalize_string_list(data.get("magazines") or data.get("magazine")),
-            "published": self._first_text(data, "published", "publishedDate"),
-            "rating": data.get("rating") if isinstance(data.get("rating"), dict) else {},
-            "languages": self._normalize_api_languages(data.get("languages")),
-            "raw": data,
-        }
-
-    def _normalize_string_list(self, value) -> list[str]:
-        if value is None:
-            return []
-        if isinstance(value, str):
-            return [part.strip() for part in re.split(r",|;", value) if part.strip()]
-        if isinstance(value, list):
-            output: list[str] = []
-            for item in value:
-                if isinstance(item, str):
-                    output.append(normalize_text(item))
-                elif isinstance(item, dict):
-                    text = self._first_text(item, "title", "name", "label")
-                    if text:
-                        output.append(text)
-            return output
-        return []
-
-    def _normalize_api_languages(self, payload) -> list[dict]:
-        languages = self._api_list(payload)
-        if isinstance(payload, dict) and isinstance(payload.get("languages"), list):
-            languages = payload["languages"]
-
-        output: list[dict] = []
-        seen: set[str] = set()
-        for item in languages:
-            if isinstance(item, str):
-                code = item
-                title = item
-                count = None
-            elif isinstance(item, dict):
-                code = self._first_text(item, "id", "code", "language") or ""
-                title = self._first_text(item, "title", "name", "label") or code
-                chapters = self._first_text(item, "chapters", "chapter_count", "chapterCount")
-                count_match = re.search(r"\d+", chapters or "")
-                count = int(count_match.group(0)) if count_match else None
-            else:
-                continue
-
-            if not code or code in seen:
-                continue
-            seen.add(code)
-            output.append({"code": code, "title": title, "chapter_count": count})
-        return output
-
     def chapter_metadata(
         self,
         chapter_url: str,
@@ -5516,7 +4806,7 @@ class MangaFireReader:
             payload.update(
                 {
                     "ok": True,
-                    "provider": payload.get("provider") or "mangafire",
+                    "provider": payload.get("provider") or "reader",
                     "chapter": {
                         "url": state.url,
                         "label": state.label,
@@ -5591,102 +4881,6 @@ class MangaFireReader:
             )
         return payload
 
-    def _extract_manga_metadata(self, manga_url: str, html: str) -> dict:
-        slug = slug_from_url(manga_url)
-        title = text_from_html(first_match(r'<h1[^>]*itemprop=["\']name["\'][^>]*>(.*?)</h1>', html) or "")
-        if not title:
-            title = text_from_html(first_match(r"<title[^>]*>(.*?)</title>", html) or "")
-            title = re.sub(r"\s+Manga\s+-\s+Read.*$", "", title, flags=re.IGNORECASE).strip()
-
-        alt_title = text_from_html(first_match(r'<h1[^>]*itemprop=["\']name["\'][^>]*>.*?</h1>\s*<h6[^>]*>(.*?)</h6>', html) or "")
-        status = text_from_html(first_match(r'<div class=["\']info["\'][^>]*>\s*<p[^>]*>(.*?)</p>', html) or "")
-        manga_type = text_from_html(first_match(r'<div class=["\']min-info["\'][^>]*>\s*<a[^>]*>(.*?)</a>', html) or "")
-        poster = first_match(r'<img[^>]+itemprop=["\']image["\'][^>]+src=["\']([^"\']+)', html)
-        if not poster:
-            poster = first_match(r'<div class=["\']poster["\'][^>]*>.*?<img[^>]+src=["\']([^"\']+)', html)
-
-        synopsis = text_from_html(first_match(r'<div class=["\']modal fade["\'][^>]+id=["\']synopsis["\'][^>]*>.*?<div class=["\']modal-content[^"\']*["\'][^>]*>(.*?)</div>\s*</div>\s*</div>', html) or "")
-        description = synopsis or text_from_html(first_match(r'<div class=["\']description["\'][^>]*>(.*?)</div>', html) or "")
-
-        meta = self._extract_manga_meta_pairs(html)
-        languages = self._extract_manga_languages(html)
-        rating_score = first_match(r'data-score=["\']([^"\']+)', html)
-        review_count = first_match(r'itemprop=["\']reviewCount["\'][^>]*>(.*?)</span>', html)
-        mal_match = re.search(
-            r"<b>\s*([\d.]+)\s*MAL\s*</b>\s*by\s*([^<]+)\s*users",
-            html,
-            re.IGNORECASE,
-        )
-        latest_chapter = first_match(r"latest chapter\s+([\d.]+)", html)
-
-        return {
-            "slug": slug,
-            "url": manga_url,
-            "title": title,
-            "alternative_title": alt_title or None,
-            "status": status or None,
-            "type": manga_type or None,
-            "poster": urljoin(BASE_URL, poster) if poster else None,
-            "description": description or None,
-            "latest_chapter": latest_chapter,
-            "authors": meta.get("Author", []),
-            "genres": meta.get("Genres", []),
-            "magazines": meta.get("Mangazines", []),
-            "published": meta.get("Published", [None])[0],
-            "rating": {
-                "score": float(rating_score) if rating_score else None,
-                "reviews": int(review_count) if review_count and review_count.isdigit() else None,
-                "mal_score": float(mal_match.group(1)) if mal_match else None,
-                "mal_users": normalize_text(mal_match.group(2)) if mal_match else None,
-            },
-            "languages": languages,
-        }
-
-    def _extract_manga_meta_pairs(self, html: str) -> dict[str, list[str]]:
-        meta_block = first_match(
-            r'<div class=["\']meta["\'][^>]*>(.*?)</div>\s*<div class=["\']rating-box',
-            html,
-        ) or ""
-        pairs: dict[str, list[str]] = {}
-        for label_html, value_html in re.findall(
-            r"<div>\s*<span[^>]*>(.*?)</span>\s*<span[^>]*>(.*?)</span>\s*</div>",
-            meta_block,
-            re.IGNORECASE | re.DOTALL,
-        ):
-            label = text_from_html(label_html).rstrip(":")
-            values = [
-                text_from_html(value)
-                for value in re.findall(r"<a\b[^>]*>(.*?)</a>", value_html, re.IGNORECASE | re.DOTALL)
-            ]
-            if not values:
-                text_value = text_from_html(value_html)
-                values = [text_value] if text_value else []
-            pairs[label] = values
-        return pairs
-
-    def _extract_manga_languages(self, html: str) -> list[dict]:
-        languages: list[dict] = []
-        by_code: dict[str, dict] = {}
-        for code, title, body in re.findall(
-            r'<a[^>]+class=["\'][^"\']*dropdown-item[^"\']*["\'][^>]+data-code=["\']([^"\']+)["\'][^>]+data-title=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
-            html,
-            re.IGNORECASE | re.DOTALL,
-        ):
-            text = text_from_html(body)
-            count_match = re.search(r"\((\d+)\s+Chapters?\)", text, re.IGNORECASE)
-            entry = {
-                "code": code,
-                "title": normalize_text(title),
-                "chapter_count": int(count_match.group(1)) if count_match else None,
-            }
-            existing = by_code.get(code)
-            if existing is None or (
-                existing.get("chapter_count") is None
-                and entry.get("chapter_count") is not None
-            ):
-                by_code[code] = entry
-        return list(by_code.values())
-
     def list_chapters(
         self,
         source_url: str,
@@ -5694,7 +4888,6 @@ class MangaFireReader:
         preferred_chapter: str | None = None,
     ) -> dict:
         with self.lock:
-            self._last_mangafire_chapters_provider = None
             if self._is_toomics_source(source_url):
                 chapters = self._fetch_toomics_chapters(source_url, lang, preferred_chapter)
             elif self._is_mangalivre_source(source_url):
@@ -5713,13 +4906,11 @@ class MangaFireReader:
                 chapters = self._fetch_readfull_chapters(source_url, preferred_chapter)
             elif self._is_noveltoon_source(source_url):
                 chapters = self._fetch_noveltoon_chapters(source_url, lang, preferred_chapter)
-            elif self.use_api:
-                try:
-                    chapters = self._fetch_chapters_via_api(source_url, lang, preferred_chapter)
-                except Exception:
-                    chapters = self._fetch_chapters_with_fallback(source_url, lang, preferred_chapter)
             else:
-                chapters = self._fetch_chapters_with_fallback(source_url, lang, preferred_chapter)
+                raise ValueError(
+                    "Fonte nao suportada para capitulos. Use MangaDex, MangaLivre, MangasBrasuka, "
+                    "Toomics, One Piece Project, DragonTea, MangaKatana, ReadFull ou NovelToon."
+                )
             selected = self._select_chapter(chapters, source_url, preferred_chapter)
             display_chapters = list(reversed(chapters))
             provider = (
@@ -5733,9 +4924,7 @@ class MangaFireReader:
                 else "pieceproject" if self._is_pieceproject_source(source_url)
                 else "readfull" if self._is_readfull_source(source_url)
                 else "noveltoon" if self._is_noveltoon_source(source_url)
-                else self._last_mangafire_chapters_provider if self._last_mangafire_chapters_provider
-                else "mangafire-api" if chapters and chapters[0].chapter_id
-                else "mangafire"
+                else "unknown"
             )
             language = (
                 "en"
@@ -5811,64 +5000,10 @@ class MangaFireReader:
         if self._is_pieceproject_source(url):
             return self._load_pieceproject_chapter(url)
 
-        if self.use_api:
-            try:
-                return self._load_chapter_via_api(url)
-            except (requests.RequestException, RuntimeError, ValueError, KeyError, TypeError, json.JSONDecodeError):
-                pass
-
-        try:
-            return self._load_chapter_via_http(url)
-        except Exception:
-            pass
-
-        with self.lock:
-            if not self._is_chapter_url(url):
-                raise ValueError("Informe uma URL de capitulo do MangaFire.")
-
-            driver = self.get_driver()
-            clear_resource_timings(driver)
-            driver.get(url)
-            session = session_from_driver(driver, url)
-
-            image_api_url = wait_for_resource_url(
-                driver,
-                self.args.timeout,
-                "imagens do capitulo",
-                is_image_list_api,
-            )
-            image_payload = request_json(session, image_api_url, url, self.args.timeout)
-            image_urls = extract_image_urls(image_payload)
-            if not image_urls:
-                raise RuntimeError("O MangaFire nao retornou imagens para este capitulo.")
-
-            chapters = self._try_get_chapters(driver, session, url)
-            previous_url, next_url = self._find_neighbors(chapters, url)
-
-            label = self._chapter_label(url)
-            cache_dir = self.cache.new_chapter_dir(label)
-            self.state = ChapterState(
-                url=url,
-                label=label,
-                image_urls=image_urls,
-                cache_dir=cache_dir,
-                session=session,
-                previous_url=previous_url,
-                next_url=next_url,
-            )
-
-            return {
-                "ok": True,
-                "url": url,
-                "label": label,
-                "count": len(image_urls),
-                "previous": previous_url,
-                "next": next_url,
-                "images": [
-                    {"index": index, "src": f"/api/image/{index}?v={int(time.time())}"}
-                    for index in range(1, len(image_urls) + 1)
-                ],
-            }
+        raise ValueError(
+            "Fonte de capitulo nao suportada. Use MangaDex, MangaLivre, MangasBrasuka, "
+            "Toomics, One Piece Project, DragonTea, MangaKatana, ReadFull ou NovelToon."
+        )
 
     def _load_pieceproject_chapter(self, url: str) -> dict:
         catalog = self._pieceproject_catalog()
@@ -6054,62 +5189,6 @@ class MangaFireReader:
             "next": next_url,
         }
 
-    def _load_chapter_via_api(self, url: str) -> dict:
-        with self.lock:
-            if not (url.startswith("api://chapter/") or self._is_chapter_url(url)):
-                raise ValueError("Informe uma URL de capitulo do MangaFire.")
-
-            chapter_id = self._chapter_id_for_url(url)
-            if not chapter_id:
-                raise RuntimeError("Nao consegui resolver o chapterId pela API do MangaFire.")
-
-            payload = self._api_get(f"/chapter/{quote(chapter_id, safe='')}")
-            image_urls = self._image_urls_from_api_payload(payload)
-            if not image_urls:
-                raise RuntimeError("A API do MangaFire nao retornou imagens para este capitulo.")
-
-            chapters: list[Chapter] = []
-            previous_url: str | None = None
-            next_url: str | None = None
-            if self._is_chapter_url(url):
-                slug = slug_from_url(url)
-                lang = self._lang_from_chapter_url(url)
-                if slug and lang:
-                    try:
-                        chapters = self._fetch_chapters_via_api(manga_page_url(slug), lang)
-                        previous_url, next_url = self._find_neighbors(chapters, url)
-                    except Exception:
-                        previous_url, next_url = None, None
-
-            session = session_from_scraper(self._get_cloudscraper(), url)
-            label = self._chapter_label(url)
-            cache_dir = self.cache.new_chapter_dir(label)
-            self.state = ChapterState(
-                url=url,
-                label=label,
-                image_urls=image_urls,
-                cache_dir=cache_dir,
-                session=session,
-                previous_url=previous_url,
-                next_url=next_url,
-            )
-
-            return {
-                "ok": True,
-                "provider": "mangafire-api",
-                "api_url": self.api_base_url,
-                "url": url,
-                "chapter_id": chapter_id,
-                "label": label,
-                "count": len(image_urls),
-                "previous": previous_url,
-                "next": next_url,
-                "images": [
-                    {"index": index, "src": f"/api/image/{index}?v={int(time.time())}"}
-                    for index in range(1, len(image_urls) + 1)
-                ],
-            }
-
     def _compose_toomics_chunk(
         self,
         index: int,
@@ -6278,259 +5357,6 @@ class MangaFireReader:
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         return path, content_type
 
-    def _try_get_chapters(
-        self,
-        driver,
-        session: requests.Session,
-        referer: str,
-    ) -> list[Chapter]:
-        for url in reversed(resource_urls(driver)):
-            if not is_chapter_list_api(url):
-                continue
-            try:
-                payload = request_json(session, url, referer, self.args.timeout)
-                return extract_chapters_from_payload(payload)
-            except Exception:
-                return []
-        return []
-
-    def _fetch_chapters_via_curl_cffi(self, source_url: str, lang: str) -> list[Chapter]:
-        slug = slug_from_url(source_url)
-        if not slug:
-            raise ValueError("Informe uma URL do MangaFire.")
-
-        normalized_lang = normalize_lang(lang or "pt-br")
-        api_url, referer = chapter_list_api_url(slug, normalized_lang)
-        payload = self._mangafire_curl_json(api_url, referer, self.args.timeout)
-        chapters = extract_chapters_from_payload(payload)
-        if not chapters:
-            raise RuntimeError("A lista de capitulos veio vazia.")
-
-        for chapter in chapters:
-            if chapter.chapter_id:
-                self.api_chapter_ids_by_url[chapter.url] = chapter.chapter_id
-        self._last_mangafire_chapters_provider = "mangafire-curl_cffi"
-        return chapters
-
-    def _fetch_chapter_images_via_curl_cffi(
-        self,
-        chapter_id: str,
-        referer: str,
-    ) -> list[str]:
-        api_url, default_referer = chapter_images_api_url(chapter_id)
-        payload = self._mangafire_curl_json(api_url, referer or default_referer, self.args.timeout)
-        image_urls = extract_image_urls(payload)
-        if not image_urls:
-            raise RuntimeError("O MangaFire nao retornou imagens para este capitulo.")
-        return image_urls
-
-    def _fetch_chapters_with_fallback(
-        self,
-        source_url: str,
-        lang: str,
-        preferred_chapter: str | None = None,
-    ) -> list[Chapter]:
-        try:
-            return self._fetch_chapters_via_curl_cffi(source_url, lang)
-        except Exception:
-            pass
-        try:
-            return self._fetch_chapters_via_http(source_url, lang)
-        except Exception:
-            return self._fetch_chapters(source_url, lang, preferred_chapter)
-
-    def _fetch_chapters_via_http(self, source_url: str, lang: str) -> list[Chapter]:
-        slug = slug_from_url(source_url)
-        if not slug:
-            raise ValueError("Informe uma URL do MangaFire.")
-
-        scraper = self._get_cloudscraper()
-        chapters = fetch_chapters_http(scraper, slug, lang, self.args.timeout)
-        self._last_mangafire_chapters_provider = "mangafire-cloudscraper"
-        return chapters
-
-    def _load_chapter_via_http(self, url: str) -> dict:
-        with self.lock:
-            if not self._is_chapter_url(url):
-                raise ValueError("Informe uma URL de capitulo do MangaFire.")
-
-            slug = slug_from_url(url)
-            chapter_lang = self._lang_from_chapter_url(url)
-            chapter_id = self.api_chapter_ids_by_url.get(url)
-            scraper = self._get_cloudscraper()
-
-            chapters: list[Chapter] = []
-            if not chapter_id and slug and chapter_lang:
-                try:
-                    chapters = self._fetch_chapters_via_curl_cffi(manga_page_url(slug), chapter_lang)
-                except Exception:
-                    chapters = fetch_chapters_http(scraper, slug, chapter_lang, self.args.timeout)
-                selected = self._select_chapter(chapters, url)
-                chapter_id = selected.chapter_id if selected else None
-                for chapter in chapters:
-                    if chapter.chapter_id:
-                        self.api_chapter_ids_by_url[chapter.url] = chapter.chapter_id
-
-            if not chapter_id:
-                raise RuntimeError("Nao consegui resolver o chapterId do MangaFire.")
-
-            async def _parallel_load():
-                img_api_url, img_referer = chapter_images_api_url(chapter_id)
-                img_task = self._mangafire_async_json(img_api_url, img_referer or url, self.args.timeout)
-
-                if chapters:
-                    img_payload = await img_task
-                    return img_payload, None
-                else:
-                    chap_api_url, chap_referer = chapter_list_api_url(slug, chapter_lang)
-                    chap_task = self._mangafire_async_json(chap_api_url, chap_referer, self.args.timeout)
-                    img_result, chap_result = await asyncio.gather(img_task, chap_task, return_exceptions=True)
-                    return img_result, chap_result
-
-            img_payload, chap_payload = self._run_async(_parallel_load())
-
-            if isinstance(img_payload, BaseException):
-                image_urls = fetch_chapter_images_http(scraper, chapter_id, url, self.args.timeout)
-                image_provider = "mangafire"
-            else:
-                image_urls = extract_image_urls(img_payload)
-                image_provider = "mangafire-curl_cffi"
-                if not image_urls:
-                    image_urls = fetch_chapter_images_http(scraper, chapter_id, url, self.args.timeout)
-                    image_provider = "mangafire"
-
-            if not chapters and chap_payload is not None and not isinstance(chap_payload, BaseException):
-                try:
-                    fetched = extract_chapters_from_payload(chap_payload)
-                    if fetched:
-                        chapters = fetched
-                        for chapter in chapters:
-                            if chapter.chapter_id:
-                                self.api_chapter_ids_by_url[chapter.url] = chapter.chapter_id
-                except Exception:
-                    pass
-
-            if not chapters and slug and chapter_lang:
-                try:
-                    chapters = fetch_chapters_http(scraper, slug, chapter_lang, self.args.timeout)
-                except Exception:
-                    chapters = []
-
-            previous_url, next_url = self._find_neighbors(chapters, url)
-
-            label = self._chapter_label(url)
-            cache_dir = self.cache.new_chapter_dir(label)
-            session = session_from_scraper(scraper, url)
-            self.state = ChapterState(
-                url=url,
-                label=label,
-                image_urls=image_urls,
-                cache_dir=cache_dir,
-                session=session,
-                previous_url=previous_url,
-                next_url=next_url,
-            )
-
-            return {
-                "ok": True,
-                "provider": image_provider,
-                "url": url,
-                "chapter_id": chapter_id,
-                "label": label,
-                "count": len(image_urls),
-                "previous": previous_url,
-                "next": next_url,
-                "images": [
-                    {"index": index, "src": f"/api/image/{index}?v={int(time.time())}"}
-                    for index in range(1, len(image_urls) + 1)
-                ],
-            }
-
-    def _fetch_chapters(
-        self,
-        source_url: str,
-        lang: str,
-        preferred_chapter: str | None = None,
-    ) -> list[Chapter]:
-        if "mangafire.to/" not in source_url:
-            raise ValueError("Informe uma URL do MangaFire.")
-
-        driver = self.get_driver()
-        attempts = self._chapter_seed_urls(source_url, lang, preferred_chapter)
-        if not attempts:
-            raise ValueError("Nao foi possivel montar uma URL de leitura para esse manga.")
-
-        last_error: Exception | None = None
-        for seed_url in attempts:
-            try:
-                clear_resource_timings(driver)
-                driver.get(seed_url)
-                api_url = wait_for_resource_url(
-                    driver,
-                    8,
-                    "lista de capitulos",
-                    is_chapter_list_api,
-                )
-                session = session_from_driver(driver, seed_url)
-                payload = request_json(session, api_url, seed_url, self.args.timeout)
-                chapters = extract_chapters_from_payload(payload)
-                if chapters:
-                    self._last_mangafire_chapters_provider = "mangafire-browser"
-                    return chapters
-            except Exception as exc:
-                last_error = exc
-
-        detail = f" Detalhe: {last_error}" if last_error else ""
-        raise RuntimeError(f"Nao consegui buscar a lista de capitulos.{detail}")
-
-    def _chapter_seed_urls(
-        self,
-        source_url: str,
-        lang: str,
-        preferred_chapter: str | None = None,
-    ) -> list[str]:
-        if self._is_chapter_url(source_url):
-            return [source_url]
-
-        slug = slug_from_url(source_url)
-        if not slug:
-            return []
-
-        normalized_lang = normalize_lang(lang or "pt-br")
-        candidates: list[str] = []
-
-        if preferred_chapter:
-            candidates.append(chapter_url_from_number(slug, normalized_lang, preferred_chapter))
-
-        candidates.append(chapter_url_from_number(slug, normalized_lang, "1"))
-
-        latest = self._latest_chapter_number(slug)
-        if latest:
-            candidates.append(chapter_url_from_number(slug, normalized_lang, latest))
-
-        unique: list[str] = []
-        seen: set[str] = set()
-        for candidate in candidates:
-            if candidate in seen:
-                continue
-            seen.add(candidate)
-            unique.append(candidate)
-        return unique
-
-    def _latest_chapter_number(self, slug: str) -> str | None:
-        try:
-            scraper = self._get_cloudscraper()
-            response = scraper.get(
-                manga_page_url(slug),
-                timeout=min(5, self.args.timeout),
-            )
-            response.raise_for_status()
-        except Exception:
-            return None
-
-        match = re.search(r"latest chapter\s+([\d.]+)", response.text, re.IGNORECASE)
-        return match.group(1) if match else None
-
     def _select_chapter(
         self,
         chapters: list[Chapter],
@@ -6622,11 +5448,7 @@ class MangaFireReader:
         }
 
     def _is_chapter_url(self, url: str) -> bool:
-        return (
-            "mangafire.to/" in url
-            and "/read/" in url
-            and chapter_number_from_url(url) is not None
-        )
+        return False
 
     def _find_neighbors(self, chapters: list[Chapter], current_url: str) -> tuple[str | None, str | None]:
         if not chapters:
@@ -6683,13 +5505,13 @@ class MangaFireReader:
             return self._mangakatana_chapter_label(url)
         if self._is_dragontea_source(url):
             return self._dragontea_label_from_url(url)
-        slug = slug_from_url(url) or "mangafire"
+        slug = slug_from_url(url) or "chapter"
         number = chapter_number_text_from_url(url) or str(int(time.time()))
         return clean_filename(f"{slug}-chapter-{number}")
 
 
 class ReaderHandler(BaseHTTPRequestHandler):
-    reader: MangaFireReader
+    reader: MangaReader
 
     def log_message(self, format: str, *args) -> None:
         return
@@ -6927,7 +5749,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    reader = MangaFireReader(args)
+    reader = MangaReader(args)
 
     ReaderHandler.reader = reader
     server = ThreadingHTTPServer((args.host, args.port), ReaderHandler)

@@ -12,7 +12,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from reader_server import MangaFireReader, fuzzy_match_score, normalize_match_text
+from reader_server import MangaReader, fuzzy_match_score, normalize_match_text
 
 
 CATALOG_CACHE_TTL_SECONDS = 30 * 60
@@ -110,13 +110,11 @@ class ImageCacheEntry:
     media_type: str
 
 
-reader = MangaFireReader(
+reader = MangaReader(
     SimpleNamespace(
         librewolf_path=None,
         show_browser=False,
         timeout=35,
-        api_url=None,
-        no_api=True,
         readfull_api_url="https://readfullapi.herokuapp.com",
         dragontea_browser="edge",
     )

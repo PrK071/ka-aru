@@ -66,13 +66,6 @@ SITES_FILE = Path(__file__).resolve().parent / "reader_sites.json"
 DEFAULT_SITES: dict = {
     "sites": [
         {
-            "name": "MangaFire",
-            "kind": "mangafire",
-            "base_url": "https://mangafire.to",
-            "manga_url_template": "https://mangafire.to/manga/{slug}",
-            "default_lang": "pt-br",
-        },
-        {
             "name": "MangaDex",
             "kind": "mangadex",
             "base_url": "https://mangadex.org",
@@ -360,7 +353,7 @@ def _search_on_site(reader, site: dict, query: str, limit: int) -> dict:
         return reader.search_pieceproject(query, limit=limit)
     if kind == "readfull":
         return reader.search_readfull(query, limit=limit)
-    # MangaFire e qualquer outra fonte configurada
+    # Qualquer outra fonte configurada usa a busca agregada do reader.
     return reader.search_manga(query, limit=limit)
 
 
@@ -522,17 +515,6 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Score minimo para retorno imediato. Padrao: {GOOD_SCORE}",
     )
     parser.add_argument(
-        "--api-url",
-        default="http://localhost:3000/api",
-        metavar="URL",
-        help="URL da API MangaFire externa. Padrao: http://localhost:3000/api",
-    )
-    parser.add_argument(
-        "--no-api",
-        action="store_true",
-        help="Ignora a API MangaFire externa.",
-    )
-    parser.add_argument(
         "--readfull-api-url",
         default="https://readfullapi.herokuapp.com",
         metavar="URL",
@@ -551,7 +533,7 @@ def main() -> None:
     args = build_parser().parse_args()
 
     try:
-        from reader_server import MangaFireReader
+        from reader_server import MangaReader
     except ImportError as exc:
         print(
             f"Erro: nao consegui importar reader_server.py.\n"
@@ -576,12 +558,10 @@ def main() -> None:
         librewolf_path=None,
         show_browser=False,
         timeout=int(args.timeout) + 2,
-        api_url=args.api_url,
-        no_api=args.no_api,
         readfull_api_url=args.readfull_api_url,
         noveltoon_base_url="https://noveltoon.mobi",
     )
-    reader = MangaFireReader(reader_args)
+    reader = MangaReader(reader_args)
 
     if not args.output_json:
         names = ", ".join(s["name"] for s in candidates)

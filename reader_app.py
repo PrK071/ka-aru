@@ -21,7 +21,7 @@ from PIL import Image, ImageOps, ImageTk
 from reader_server import (
     DEFAULT_PIECEPROJECT_URL,
     DEFAULT_READFULL_API_URL,
-    MangaFireReader,
+    MangaReader,
     fuzzy_match_score,
     normalize_match_text,
 )
@@ -273,7 +273,7 @@ DEFAULT_SITES = {
     ]
 }
 
-LEGACY_SITE_KINDS = {"noveltoon", "mangafire"}
+LEGACY_SITE_KINDS = {"noveltoon"}
 UNSUPPORTED_RACE_KINDS = {"noveltoon", "dragontea"}
 SEARCH_RACE_MAX_WORKERS = 6
 MIN_RACE_RELEVANCE = 0.48
@@ -354,13 +354,11 @@ class ReaderApp(ctk.CTk):
             ),
             self.sites[0],
         )
-        self.reader = MangaFireReader(
+        self.reader = MangaReader(
             SimpleNamespace(
                 librewolf_path=args.librewolf_path,
                 show_browser=args.show_browser,
                 timeout=args.timeout,
-                api_url=None,
-                no_api=True,
                 readfull_api_url=args.readfull_api_url,
                 dragontea_browser=args.dragontea_browser,
             )
@@ -2713,8 +2711,6 @@ class ReaderApp(ctk.CTk):
         lowered = url.lower()
         if "mangadex.org" in lowered or lowered.startswith("mangadex://"):
             kind = "mangadex"
-        elif "mangafire.to" in lowered:
-            kind = "mangafire"
         elif "mangalivre.blog" in lowered or lowered.startswith("mangalivre://"):
             kind = "mangalivre"
         elif lowered.startswith("readfull://") or "readfull" in lowered:
