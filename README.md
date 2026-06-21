@@ -13,6 +13,8 @@ Catálogo/leitor local de mangás e manhwas com back-end FastAPI e front-end Rea
 - MangaKatana
 - ReadFull
 - NovelToon
+- YumoMangas
+- Sakura Mangas
 
 ## Rodar
 

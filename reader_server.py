@@ -5,6 +5,7 @@ import atexit
 import asyncio
 import base64
 import difflib
+import hashlib
 import io
 import json
 import mimetypes
@@ -48,7 +49,7 @@ except Exception:
 @dataclass
 class Chapter:
     url: str
-    label: str
+    label: str = ""
     number: float | None = None
     number_text: str | None = None
     chapter_id: str | None = None
@@ -152,6 +153,16 @@ DEFAULT_DRAGONTEA_BASE_URL = "https://dragontea.ink"
 DEFAULT_TOOMICS_BASE_URL = "https://global.toomics.com"
 DEFAULT_MANGAKATANA_BASE_URL = "https://mangakatana.com"
 DEFAULT_MANGALIVRE_BASE_URL = "https://mangalivre.blog"
+DEFAULT_YUMO_API_BASE = "https://api.yomumangas.com"
+DEFAULT_YUMO_CDN_BASE = "https://b2.yomumangas.com"
+DEFAULT_SAKURA_BASE_URL = "https://sakuramangas.org"
+DEFAULT_SAKURA_CDP_URL = "http://127.0.0.1:9222"
+DEFAULT_SAKURA_PROFILE_DIR = ".sakura-browser-profile"
+SAKURA_FALLBACK_SELECTOR = "img[src^='blob:']"
+SAKURA_BRAVE_PATHS = (
+    Path(r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"),
+    Path.home() / "AppData/Local/BraveSoftware/Brave-Browser/Application/brave.exe",
+)
 MANGALIVRE_CACHE_SECONDS = 900
 DRAGONTEA_IMAGE_SELECTOR = ".reading-content .page-break img"
 TOOMICS_IMAGE_SELECTOR = "#viewer-img img, .viewer-imgs img"
@@ -163,6 +174,48 @@ SEARCH_TOTAL_TIMEOUT_SECONDS = 20
 SEARCH_BROWSER_TIMEOUT_SECONDS = 18
 MAX_FUZZY_SEARCH_TERMS = 5
 MANGADEX_SPARSE_LANGUAGE_THRESHOLD = 8
+
+SAKURA_READER_SELECTOR = ".pag-item img[src^='blob:'], .imagem-ctn img[src^='blob:']"
+SAKURA_BLOB_PROBE_JS = r"""
+(() => {
+  if (window.__mangaTempSakuraProbe) return;
+  window.__mangaTempSakuraProbe = true;
+  window.__mangaTempSakuraBlobs = new Map();
+  const originalCreateObjectURL = URL.createObjectURL.bind(URL);
+  URL.createObjectURL = function (value) {
+    const url = originalCreateObjectURL(value);
+    if (value instanceof Blob) window.__mangaTempSakuraBlobs.set(url, value);
+    return url;
+  };
+})();
+"""
+
+SAKURA_EXTRACT_BLOB_JS = r"""
+async ({ selector, index }) => {
+  const image = Array.from(document.querySelectorAll(selector))[index];
+  if (!image) return null;
+  const src = image.currentSrc || image.src || "";
+  if (!src.startsWith("blob:")) return null;
+  let blob = window.__mangaTempSakuraBlobs?.get(src) || null;
+  if (!blob) {
+    const response = await fetch(src);
+    if (!response.ok) throw new Error(`Falha lendo blob: HTTP ${response.status}`);
+    blob = await response.blob();
+  }
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+  return {
+    dataUrl,
+    mime: blob.type || "application/octet-stream",
+    width: image.naturalWidth || 0,
+    height: image.naturalHeight || 0,
+  };
+}
+"""
 
 DRAGONTEA_RESTORE_IMAGES_JS = r"""
 (selector) => {
@@ -988,6 +1041,68 @@ def first_match(pattern: str, text: str, flags: int = re.IGNORECASE | re.DOTALL)
     return match.group(1) if match else None
 
 
+def normalize_image_url(raw_url: str | None, base_url: str = "") -> str:
+    url = unescape(str(raw_url or "")).strip()
+    if not url or url == "#" or url.startswith("data:"):
+        return ""
+    url = urljoin(base_url, url)
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+
+    params = parse_qs(parsed.query)
+    for key in ("a", "url", "u", "img", "image"):
+        candidate = params.get(key, [None])[0]
+        if candidate and re.match(r"^https?://", candidate, re.IGNORECASE):
+            nested = normalize_image_url(candidate)
+            if nested:
+                return nested
+
+    return parsed._replace(fragment="").geturl()
+
+
+def image_dedupe_key(raw_url: str) -> str:
+    url = normalize_image_url(raw_url)
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    path = unquote(parsed.path)
+    if re.search(r"\.(?:avif|gif|jpe?g|png|webp)$", path, re.IGNORECASE):
+        return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{path}"
+
+    ignored = {
+        "_",
+        "cb",
+        "cache",
+        "cachebuster",
+        "host",
+        "rand",
+        "r",
+        "t",
+        "timestamp",
+        "v",
+    }
+    stable_params = [
+        (key, tuple(values))
+        for key, values in sorted(parse_qs(parsed.query, keep_blank_values=True).items())
+        if key.lower() not in ignored
+    ]
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{path}?{stable_params}"
+
+
+def dedupe_image_urls(urls: list[str]) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for raw_url in urls:
+        url = normalize_image_url(raw_url)
+        key = image_dedupe_key(url)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(url)
+    return unique
+
+
 class TemporaryChapterCache:
     def __init__(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="mangatemp-reader-"))
@@ -1050,12 +1165,49 @@ class MangaReader:
             or os.environ.get("MANGALIVRE_BASE_URL")
             or DEFAULT_MANGALIVRE_BASE_URL
         ).rstrip("/")
+        self.yumo_api_base = (
+            getattr(args, "yumo_api_base", None)
+            or os.environ.get("YOMU_API_BASE")
+            or os.environ.get("YUMO_API_BASE")
+            or DEFAULT_YUMO_API_BASE
+        ).rstrip("/")
+        self.yumo_cdn_base = (
+            getattr(args, "yumo_cdn_base", None)
+            or os.environ.get("YOMU_CDN_BASE")
+            or DEFAULT_YUMO_CDN_BASE
+        ).rstrip("/")
+        self.yumo_api_key = (
+            getattr(args, "yumo_api_key", None)
+            or os.environ.get("YOMU_API_KEY")
+            or os.environ.get("YUMO_API_KEY")
+            or ""
+        ).strip()
+        self.sakura_base_url = (
+            getattr(args, "sakura_base_url", None)
+            or os.environ.get("SAKURA_BASE_URL")
+            or DEFAULT_SAKURA_BASE_URL
+        ).rstrip("/")
+        self.sakura_cdp_url = (
+            getattr(args, "sakura_cdp_url", None)
+            or os.environ.get("SAKURA_CDP_URL")
+            or DEFAULT_SAKURA_CDP_URL
+        ).rstrip("/")
+        self.sakura_challenge_timeout = int(
+            getattr(args, "sakura_challenge_timeout", None)
+            or os.environ.get("SAKURA_CHALLENGE_TIMEOUT", "180")
+        )
+        self.sakura_profile_dir = (
+            getattr(args, "sakura_profile_dir", None)
+            or os.environ.get("SAKURA_PROFILE_DIR")
+            or DEFAULT_SAKURA_PROFILE_DIR
+        )
         self._pieceproject_cache: tuple[float, list[dict]] | None = None
         self._toomics_chapters_cache: dict[tuple[str, str, str], tuple[float, list[Chapter], dict]] = {}
         self._mangalivre_chapters_cache: dict[str, tuple[float, list[Chapter]]] = {}
         self._mangasbrasuka_page_images_cache: dict[str, tuple[float, list[str]]] = {}
         self._mangadex_tag_ids_cache: dict[str, str] | None = None
         self._cloudscraper: cloudscraper.CloudScraper | None = None
+        self._sakura_browser_lock = threading.RLock()
         atexit.register(self.close)
 
     def _mangadex_get(self, path: str, params: dict | None = None):
@@ -1097,6 +1249,35 @@ class MangaReader:
 
     def _mangadex_chapter_url(self, chapter_id: str) -> str:
         return f"https://mangadex.org/chapter/{chapter_id}"
+
+    def mangadex_chapter_total(self, source_url: str, lang: str = "pt-br") -> int:
+        """Contagem barata de capitulos via /aggregate (sem baixar conteudo/imagens)."""
+        manga_id = self._mangadex_manga_id_from_source(source_url)
+        if not manga_id:
+            return 0
+
+        def count(language: str) -> int:
+            try:
+                payload = self._mangadex_get(
+                    f"/manga/{manga_id}/aggregate",
+                    {"translatedLanguage[]": [language]} if language else None,
+                )
+            except Exception:
+                return 0
+            volumes = payload.get("volumes")
+            if not isinstance(volumes, dict):
+                return 0
+            total = 0
+            for vol in volumes.values():
+                chapters = (vol or {}).get("chapters")
+                if isinstance(chapters, dict):
+                    total += len(chapters)
+            return total
+
+        total = count(lang)
+        if total == 0 and lang != "en":
+            total = count("en")
+        return total
 
     def _is_dragontea_source(self, source_url: str) -> bool:
         return bool(re.search(r"dragontea\.ink", source_url or "", re.IGNORECASE))
@@ -1197,7 +1378,7 @@ class MangaReader:
             DRAGONTEA_COLLECT_IMAGE_URLS_JS,
             {"selector": DRAGONTEA_IMAGE_SELECTOR, "attrs": attrs},
         )
-        return [url for url in urls if isinstance(url, str)]
+        return dedupe_image_urls([url for url in urls if isinstance(url, str)])
 
     def _dragontea_scroll_to_collect_urls(self, page) -> list[str]:
         stable_count = 0
@@ -1303,6 +1484,322 @@ class MangaReader:
             return {
                 "ok": True,
                 "provider": "dragontea",
+                "url": url,
+                "source_url": url,
+                "chapter_id": url,
+                "label": label,
+                "title": title or None,
+                "number": parse_float(number_text),
+                "number_text": number_text,
+                "language": "pt-br",
+                "count": len(image_urls),
+                "previous": previous_url,
+                "next": next_url,
+                "images": [
+                    {"index": index, "src": f"/api/image/{index}?v={int(time.time())}"}
+                    for index in range(1, len(image_urls) + 1)
+                ],
+            }
+
+    # ------------------------------------------------------------------
+    # Sakura Mangas (leitor baseado em blob: protegido por Cloudflare)
+    # ------------------------------------------------------------------
+    def _is_sakura_source(self, source_url: str) -> bool:
+        return bool(
+            re.search(r"sakuramangas\.org", source_url or "", re.IGNORECASE)
+            or (source_url or "").startswith("sakura://")
+        )
+
+    def _sakura_chapter_number_from_source(self, source_url: str) -> str | None:
+        parsed = urlparse(source_url)
+        raw = unquote(f"{parsed.path} {parsed.query}")
+        match = re.search(r"(?:chapter|capitulo|cap)[-/_.\s]*(\d+(?:\.\d+)?)", raw, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        numbers = re.findall(r"\d+(?:\.\d+)?", raw)
+        return numbers[-1] if numbers else None
+
+    def _sakura_label_from_url(self, url: str, title: str | None = None) -> str:
+        if title:
+            title = re.sub(r"\s*[-|]\s*Sakura\s*Mangas.*$", "", title, flags=re.IGNORECASE).strip()
+        if title:
+            return clean_filename(title, fallback="sakura-chapter")
+
+        parsed = urlparse(url)
+        slug = Path(unquote(parsed.path.rstrip("/") or "chapter")).name
+        number = self._sakura_chapter_number_from_source(url)
+        if number:
+            return clean_filename(f"sakura-chapter-{number}", fallback="sakura-chapter")
+        return clean_filename(f"sakura-{slug}", fallback="sakura-chapter")
+
+    def _fetch_sakura_chapters(
+        self,
+        source_url: str,
+        preferred_chapter: str | None = None,
+    ) -> list[Chapter]:
+        if not self._is_sakura_source(source_url):
+            raise ValueError("Informe uma URL do Sakura Mangas.")
+
+        number_text = self._sakura_chapter_number_from_source(source_url) or preferred_chapter
+        title = f"Capitulo {number_text}" if number_text else "Capitulo Sakura"
+        return [
+            Chapter(
+                url=source_url.strip(),
+                number=parse_float(number_text),
+                number_text=number_text,
+                chapter_id=source_url.strip(),
+                title=title,
+            )
+        ]
+
+    @staticmethod
+    def _sakura_image_extension(mime: str, content: bytes) -> str:
+        mime = (mime or "").lower().split(";", 1)[0].strip()
+        by_mime = {
+            "image/avif": ".avif",
+            "image/gif": ".gif",
+            "image/jpeg": ".jpg",
+            "image/jpg": ".jpg",
+            "image/png": ".png",
+            "image/webp": ".webp",
+        }
+        if mime in by_mime:
+            return by_mime[mime]
+        if content.startswith(b"\xff\xd8\xff"):
+            return ".jpg"
+        if content.startswith(b"\x89PNG\r\n\x1a\n"):
+            return ".png"
+        if content.startswith((b"GIF87a", b"GIF89a")):
+            return ".gif"
+        if content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+            return ".webp"
+        return ".bin"
+
+    def _sakura_is_challenge(self, page) -> bool:
+        try:
+            title = (page.title() or "").casefold()
+        except Exception:
+            return False
+        return any(marker in title for marker in ("just a moment", "um momento", "verificando"))
+
+    def _sakura_wait_for_access(self, page) -> None:
+        if not self._sakura_is_challenge(page):
+            return
+        show_browser = bool(getattr(self.args, "show_browser", False))
+        if not show_browser:
+            raise RuntimeError(
+                "Cloudflare pediu verificacao no Sakura Mangas. Rode com --show-browser "
+                "(ou abra o Chrome em modo CDP via --sakura-cdp-url) e conclua a verificacao."
+            )
+        deadline = time.monotonic() + self.sakura_challenge_timeout
+        while time.monotonic() < deadline:
+            page.wait_for_timeout(1000)
+            if not self._sakura_is_challenge(page):
+                return
+        raise TimeoutError("Cloudflare nao foi concluido no tempo limite no Sakura Mangas.")
+
+    def _open_sakura_context(self, playwright):
+        """Retorna (context, cleanup). Tenta CDP; cai para perfil persistente."""
+        cdp_url = (self.sakura_cdp_url or "").strip()
+        if cdp_url:
+            try:
+                browser = playwright.chromium.connect_over_cdp(cdp_url, timeout=8000)
+                context = browser.contexts[0] if browser.contexts else browser.new_context()
+                return context, browser.close
+            except Exception:
+                pass
+
+        profile = Path(self.sakura_profile_dir).resolve()
+        profile.mkdir(parents=True, exist_ok=True)
+        show_browser = bool(getattr(self.args, "show_browser", False))
+        launch_options = {
+            "user_data_dir": str(profile),
+            "headless": not show_browser,
+            "viewport": {"width": 1280, "height": 900},
+        }
+        candidates: list[dict] = []
+        for path in SAKURA_BRAVE_PATHS:
+            if path.exists():
+                candidates.append({"executable_path": str(path)})
+        candidates.extend(({"channel": "chrome"}, {"channel": "msedge"}, {}))
+
+        errors: list[str] = []
+        for opts in candidates:
+            try:
+                context = playwright.chromium.launch_persistent_context(**opts, **launch_options)
+                return context, context.close
+            except Exception as exc:
+                errors.append(str(exc).splitlines()[0])
+        raise RuntimeError(
+            "Nenhum Chromium compativel abriu para o Sakura Mangas: " + " | ".join(errors)
+        )
+
+    def _sakura_select_selector(self, page) -> str:
+        if page.locator(SAKURA_READER_SELECTOR).count() > 0:
+            return SAKURA_READER_SELECTOR
+        if page.locator(SAKURA_FALLBACK_SELECTOR).count() > 0:
+            return SAKURA_FALLBACK_SELECTOR
+        raise RuntimeError("Nenhuma imagem blob encontrada no leitor do Sakura Mangas.")
+
+    def _sakura_hydrate(self, page, selector: str, max_passes: int = 6) -> None:
+        previous_state: tuple[int, int, int] | None = None
+        stable = 0
+        for _ in range(max_passes):
+            metrics = page.evaluate(
+                """() => ({
+                    height: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),
+                    viewport: window.innerHeight || 720,
+                })"""
+            )
+            step = max(500, int(metrics["viewport"] * 0.8))
+            for y in range(0, int(metrics["height"]) + step, step):
+                page.evaluate("y => window.scrollTo(0, y)", y)
+                page.wait_for_timeout(80)
+            page.wait_for_timeout(500)
+
+            state = page.evaluate(
+                """selector => {
+                    const imgs = Array.from(document.querySelectorAll(selector));
+                    return {
+                        count: imgs.length,
+                        loaded: imgs.filter(i => i.complete && i.naturalWidth > 0).length,
+                        height: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),
+                    };
+                }""",
+                selector,
+            )
+            signature = (state["count"], state["loaded"], state["height"])
+            stable = stable + 1 if signature == previous_state else 0
+            previous_state = signature
+            if state["count"] > 0 and state["loaded"] == state["count"] and stable >= 1:
+                break
+        page.evaluate("window.scrollTo(0, 0)")
+
+    def _sakura_extract_pages(
+        self,
+        page,
+        selector: str,
+        cache_dir: Path,
+    ) -> tuple[list[str], dict[int, "ImageCacheEntry"]]:
+        count = page.locator(selector).count()
+        seen_hashes: set[str] = set()
+        image_urls: list[str] = []
+        image_cache: dict[int, ImageCacheEntry] = {}
+
+        for dom_index in range(count):
+            payload = page.evaluate(
+                SAKURA_EXTRACT_BLOB_JS,
+                {"selector": selector, "index": dom_index},
+            )
+            if not payload or not payload.get("dataUrl"):
+                continue
+            try:
+                _, encoded = str(payload["dataUrl"]).split(",", 1)
+                content = base64.b64decode(encoded, validate=True)
+            except Exception:
+                continue
+            if not content:
+                continue
+
+            digest = hashlib.sha256(content).hexdigest()
+            if digest in seen_hashes:
+                continue
+            seen_hashes.add(digest)
+
+            page_number = len(image_urls) + 1
+            mime = (payload.get("mime") or "").split(";", 1)[0].strip().lower()
+            extension = self._sakura_image_extension(mime, content)
+            content_type = (
+                mime
+                if mime.startswith("image/")
+                else (mimetypes.guess_type(f"x{extension}")[0] or "image/jpeg")
+            )
+            filename = f"pagina_{page_number:03d}{extension}"
+            target = cache_dir / filename
+            tmp_target = target.with_name(f"{target.name}.part")
+            tmp_target.write_bytes(content)
+            tmp_target.replace(target)
+
+            image_urls.append(target.as_uri())
+            image_cache[page_number] = ImageCacheEntry(target, content_type)
+
+        return image_urls, image_cache
+
+    def _load_sakura_chapter(self, url: str) -> dict:
+        if sync_playwright is None:
+            raise RuntimeError(
+                "Playwright nao esta instalado. Rode: python -m pip install -r requirements.txt"
+            )
+
+        with self.lock:
+            if not self._is_sakura_source(url):
+                raise ValueError("Informe uma URL de capitulo do Sakura Mangas.")
+
+            title = ""
+            cache_dir: Path | None = None
+            image_urls: list[str] = []
+            image_cache: dict[int, ImageCacheEntry] = {}
+
+            with self._sakura_browser_lock:
+                try:
+                    with sync_playwright() as playwright:
+                        context, cleanup = self._open_sakura_context(playwright)
+                        try:
+                            page = context.pages[0] if context.pages else context.new_page()
+                            page.add_init_script(SAKURA_BLOB_PROBE_JS)
+                            timeout_ms = max(int(self.args.timeout) * 1000, 60_000)
+                            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                            self._sakura_wait_for_access(page)
+                            page.wait_for_selector(
+                                SAKURA_FALLBACK_SELECTOR,
+                                timeout=max(timeout_ms, 90_000),
+                            )
+                            selector = self._sakura_select_selector(page)
+                            self._sakura_hydrate(page, selector)
+                            title = normalize_text(page.title() or "")
+                            cache_dir = self.cache.new_chapter_dir(
+                                self._sakura_label_from_url(url, title)
+                            )
+                            image_urls, image_cache = self._sakura_extract_pages(
+                                page, selector, cache_dir
+                            )
+                        finally:
+                            try:
+                                cleanup()
+                            except Exception:
+                                pass
+                except PlaywrightError as exc:
+                    raise RuntimeError(
+                        f"Falha ao controlar o navegador no Sakura Mangas: {exc}"
+                    ) from exc
+
+            if not image_urls or cache_dir is None:
+                raise RuntimeError(
+                    "O Sakura Mangas nao retornou imagens (blobs) para este capitulo."
+                )
+
+            number_text = self._sakura_chapter_number_from_source(url)
+            label = self._sakura_label_from_url(url, title)
+            chapters = self._fetch_sakura_chapters(url)
+            previous_url, next_url = self._find_neighbors(chapters, url)
+            session = requests.Session()
+            session.headers.update({**DEFAULT_HEADERS, "Referer": url})
+
+            self.state = ChapterState(
+                url=url,
+                label=label,
+                image_urls=image_urls,
+                cache_dir=cache_dir,
+                session=session,
+                previous_url=previous_url,
+                next_url=next_url,
+            )
+            # Bytes ja extraidos do blob: pre-carrega o cache para /api/image servir local.
+            self.state.image_cache.update(image_cache)
+
+            return {
+                "ok": True,
+                "provider": "sakura",
                 "url": url,
                 "source_url": url,
                 "chapter_id": url,
@@ -1492,7 +1989,11 @@ class MangaReader:
             or first_match(r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)', html)
             or ""
         )
-        poster = first_match(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)', html)
+        poster = (
+            first_match(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)', html)
+            or first_match(r'<img[^>]+src=["\']([^"\']+)["\'][^>]+class=["\'][^"\']*(?:poster|cover|wp-post-image)', html)
+            or first_match(r'<img[^>]+class=["\'][^"\']*(?:poster|cover|wp-post-image)[^"\']*["\'][^>]+src=["\']([^"\']+)', html)
+        )
         keywords = text_from_html(
             first_match(r'<meta[^>]+property=["\']keywords["\'][^>]+content=["\']([^"\']+)', html)
             or first_match(r'<meta[^>]+name=["\']keywords["\'][^>]+content=["\']([^"\']+)', html)
@@ -1767,9 +2268,13 @@ class MangaReader:
             raw_url = attrs.get("data-src") or attrs.get("data-original") or attrs.get("src")
             if not raw_url or raw_url.startswith("data:"):
                 continue
-            image_url = urljoin((base_url or self.toomics_base_url).rstrip("/") + "/", raw_url)
-            if image_url not in seen:
-                seen.add(image_url)
+            image_url = normalize_image_url(
+                raw_url,
+                (base_url or self.toomics_base_url).rstrip("/") + "/",
+            )
+            key = image_dedupe_key(image_url)
+            if image_url and key and key not in seen:
+                seen.add(key)
                 urls.append(image_url)
         return urls
 
@@ -2203,7 +2708,9 @@ class MangaReader:
             raw_url = attrs.get("data-src") or attrs.get("data-original") or attrs.get("src")
             if not raw_url or raw_url.startswith("data:") or "flagcdn.com" in raw_url:
                 continue
-            url = urljoin(self.mangalivre_base_url, raw_url)
+            url = normalize_image_url(raw_url, self.mangalivre_base_url)
+            if not url:
+                continue
             class_name = attrs.get("class", "")
             alt_text = attrs.get("alt", "")
             if "chapter-image" in class_name or re.search(r"pagina\s+\d+", alt_text, re.IGNORECASE):
@@ -2212,14 +2719,7 @@ class MangaReader:
                 fallback.append(url)
 
         urls = preferred or fallback
-        unique: list[str] = []
-        seen: set[str] = set()
-        for url in urls:
-            if url in seen:
-                continue
-            seen.add(url)
-            unique.append(url)
-        return unique
+        return dedupe_image_urls(urls)
 
     def _mangalivre_chapter_label(self, url: str, title: str | None = None) -> str:
         chapter_slug = self._mangalivre_chapter_slug_from_source(url)
@@ -2499,16 +2999,9 @@ class MangaReader:
                 }
                 raw_url = attrs.get("data-src") or attrs.get("src")
                 if raw_url and raw_url not in {"#", ""} and not raw_url.startswith("data:"):
-                    urls.append(urljoin(self.mangakatana_base_url, raw_url))
+                    urls.append(normalize_image_url(raw_url, self.mangakatana_base_url))
 
-        unique: list[str] = []
-        seen: set[str] = set()
-        for url in urls:
-            if url in seen:
-                continue
-            seen.add(url)
-            unique.append(url)
-        return unique
+        return dedupe_image_urls(urls)
 
     def _mangakatana_chapter_label(self, url: str, title: str | None = None) -> str:
         parts = self._mangakatana_chapter_parts(url)
@@ -2732,7 +3225,83 @@ class MangaReader:
         match = re.search(r"(\d+(?:\.\d+)?)$", chapter_slug)
         return match.group(1) if match else None
 
-    def _mangasbrasuka_image_from_html(self, html: str) -> str | None:
+    def _mangasbrasuka_page_ref(self, chapter_url: str) -> str:
+        return f"mangasbrasuka-page://{quote(chapter_url, safe='')}"
+
+    def _mangasbrasuka_page_ref_url(self, value: str) -> str | None:
+        if not value.startswith("mangasbrasuka-page://"):
+            return None
+        return unquote(value.split("://", 1)[1])
+
+    def _mangasbrasuka_reader_scope(self, html: str) -> str:
+        for div_match in re.finditer(r"<div\b[^>]*>", html, re.IGNORECASE | re.DOTALL):
+            attrs = {
+                key.lower(): unescape(value)
+                for key, _quote, value in re.findall(
+                    r'([a-zA-Z_:][-.\w:]*)\s*=\s*(["\'])(.*?)\2',
+                    div_match.group(0),
+                    re.DOTALL,
+                )
+            }
+            classes = set(str(attrs.get("class") or "").split())
+            if "reading-content" not in classes:
+                continue
+            tail = html[div_match.start() :]
+            end_match = re.search(
+                r'(?=<div\b[^>]*class=["\'][^"\']*(?:nav-links|wp-manga-nav|comments-area)|<footer\b|</main>|</body>)',
+                tail,
+                re.IGNORECASE,
+            )
+            return tail[: end_match.start()] if end_match else tail
+        return html
+
+    def _mangasbrasuka_image_urls_from_html(self, html: str, page_url: str) -> list[str]:
+        scope = self._mangasbrasuka_reader_scope(html)
+        candidates: list[str] = []
+
+        for tag in re.findall(r"<img\b[^>]*>", scope, re.IGNORECASE | re.DOTALL):
+            attrs = {
+                key.lower(): unescape(value)
+                for key, _quote, value in re.findall(
+                    r'([a-zA-Z_:][-.\w:]*)\s*=\s*(["\'])(.*?)\2',
+                    tag,
+                    re.DOTALL,
+                )
+            }
+            for attr in ("data-src", "data-original", "data-lazy-src", "src"):
+                candidates.append(normalize_image_url(attrs.get(attr), page_url))
+            for attr in ("srcset", "data-srcset"):
+                for srcset_item in str(attrs.get(attr) or "").split(","):
+                    first = srcset_item.strip().split()[0] if srcset_item.strip() else ""
+                    candidates.append(normalize_image_url(first, page_url))
+
+        for href in re.findall(r'href=["\']([^"\']+)["\']', scope, re.IGNORECASE):
+            candidates.append(normalize_image_url(href, page_url))
+
+        candidates.extend(
+            normalize_image_url(match, page_url)
+            for match in re.findall(
+                r'https?://cdn\.mugiverso\.com/mangasbrasuka/manga[_/][^\s"\'<>]+\.(?:jpg|jpeg|png|webp)',
+                scope,
+                re.IGNORECASE,
+            )
+        )
+
+        def is_reader_image(url: str) -> bool:
+            parsed = urlparse(url)
+            path = unquote(parsed.path)
+            if not re.search(r"\.(?:avif|gif|jpe?g|png|webp)$", path, re.IGNORECASE):
+                return False
+            lowered = url.lower()
+            return "/mangasbrasuka/manga_" in lowered or "/mangasbrasuka/manga/" in lowered
+
+        return [url for url in dedupe_image_urls(candidates) if is_reader_image(url)]
+
+    def _mangasbrasuka_image_from_html(self, html: str, page_url: str | None = None) -> str | None:
+        if page_url:
+            urls = self._mangasbrasuka_image_urls_from_html(html, page_url)
+            if urls:
+                return urls[0]
         """
         Extrai a URL real da imagem da pagina.
         O site usa: <a href="https://redenovax.com/jump/...?a=<URL_REAL>&...">
@@ -2748,7 +3317,7 @@ class MangaReader:
             params = parse_qs(urlparse(href).query)
             real_url = params.get("a", [None])[0]
             if real_url and ("manga_" in real_url or "mangasbrasuka" in real_url.lower()):
-                return real_url
+                return normalize_image_url(real_url)
 
         # Fallback: imagem direta do cdn.mugiverso com padrao de manga
         m2 = re.search(
@@ -2756,7 +3325,7 @@ class MangaReader:
             html,
             re.IGNORECASE,
         )
-        return m2.group(0) if m2 else None
+        return normalize_image_url(m2.group(0)) if m2 else None
 
     def _mangasbrasuka_fetch_chapter_list_ajax(self, manga_url: str, manga_id: str) -> list[Chapter]:
         """Busca lista completa de capitulos via AJAX do Madara (manga_get_chapters)."""
@@ -2896,22 +3465,19 @@ class MangaReader:
         manga_url = self._mangasbrasuka_manga_url(slug)
         html = self._mangasbrasuka_get_html(manga_url)
 
-        # Tenta via AJAX (lista completa)
-        manga_id_m = re.search(r'"manga_id":"(\d+)"', html)
-        chapters: list[Chapter] = []
-        if manga_id_m:
-            chapters = self._mangasbrasuka_fetch_chapter_list_ajax(manga_url, manga_id_m.group(1))
+        chapters = self._mangasbrasuka_parse_chapters(html, manga_url)
 
         # Fallback: extrai do HTML estático
-        if not chapters:
-            chapters = self._mangasbrasuka_parse_chapters(html, manga_url)
-
         bounds = self._mangasbrasuka_chapter_bounds_from_html(html, manga_url)
         if bounds:
             low, high = bounds
             expected = int(high) - int(low) + 1
             if len(chapters) < expected:
                 chapters = self._mangasbrasuka_build_chapter_range(slug, low, high)
+
+        manga_id_m = re.search(r'"manga_id":"(\d+)"', html)
+        if not chapters and manga_id_m:
+            chapters = self._mangasbrasuka_fetch_chapter_list_ajax(manga_url, manga_id_m.group(1))
 
         if not chapters:
             raise RuntimeError("Nao encontrei capitulos no MangasBrasuka.")
@@ -3047,12 +3613,12 @@ class MangaReader:
         def fetch_page(chapter: Chapter) -> tuple[str, str | None]:
             try:
                 html = self._mangasbrasuka_get_html(chapter.url, manga_url)
-                return chapter.url, self._mangasbrasuka_image_from_html(html)
+                return chapter.url, self._mangasbrasuka_image_from_html(html, chapter.url)
             except Exception:
                 return chapter.url, None
 
         images_by_url: dict[str, str] = {}
-        max_workers = min(4, max(1, len(ordered)))
+        max_workers = min(12, max(1, len(ordered)))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(fetch_page, chapter) for chapter in ordered]
             for future in as_completed(futures):
@@ -3066,7 +3632,7 @@ class MangaReader:
             for image_url in [images_by_url.get(chapter.url)]
             if image_url
         ]
-        image_urls = list(dict.fromkeys(image_urls))
+        image_urls = dedupe_image_urls(image_urls)
         self._mangasbrasuka_page_images_cache[cache_key] = (time.time(), image_urls)
         return list(image_urls)
 
@@ -3091,7 +3657,7 @@ class MangaReader:
             img_url: str | None = None
             try:
                 html = self._mangasbrasuka_get_html(chapter_url, manga_url)
-                img_url = self._mangasbrasuka_image_from_html(html)
+                img_url = self._mangasbrasuka_image_from_html(html, chapter_url)
             except Exception:
                 html = ""
 
@@ -3108,7 +3674,10 @@ class MangaReader:
             except Exception:
                 pass
 
-            image_urls = self._mangasbrasuka_page_images_from_chapters(chapters, manga_url) if chapters else []
+            image_urls = [
+                self._mangasbrasuka_page_ref(chapter.url)
+                for chapter in sorted(chapters, key=lambda chapter: (chapter.number is None, chapter.number or 0.0))
+            ] if chapters else []
             if not image_urls and img_url:
                 image_urls = [img_url]
             if not image_urls:
@@ -3466,6 +4035,350 @@ class MangaReader:
                 break
         return results
 
+    # ------------------------------------------------------------------
+    # YumoMangas (api.yumomangas.com) — JSON API propria do usuario.
+    #
+    # CONTRATO ASSUMIDO (dominio inacessivel daqui; ajuste se a API real diferir):
+    #   busca     : GET {base}/mangas?query=<kw>      -> {mangas:[...]}
+    #   detalhe   : GET {base}/mangas/<id>            -> {manga:{...}}
+    #   capitulos : GET {base}/mangas/<id>/chapters   -> {chapters:[{id,chapter,...}]}
+    #   imagens   : GET {base}/mangas/<id>/chapters/<chapterId>  (AUTH: header yomu-api-key)
+    #   assets    : cover/page b2://path -> {cdn}/path  (cdn=https://b2.yomumangas.com)
+    # URL scheme interno: yumo://manga/<id> , yumo://chapter/<mangaId>/<chapterId>
+    # ------------------------------------------------------------------
+
+    def _yumo_headers(self, with_key: bool = False) -> dict:
+        headers = {
+            **DEFAULT_HEADERS,
+            "Accept": "application/json, text/plain, */*",
+            "Referer": "https://yomumangas.com/",
+            "Origin": "https://yomumangas.com",
+        }
+        if with_key and self.yumo_api_key:
+            headers["yomu-api-key"] = self.yumo_api_key
+            headers["Authorization"] = f"Bearer {self.yumo_api_key}"
+        return headers
+
+    def _yumo_resolve_asset(self, url) -> str | None:
+        if not url:
+            return None
+        url = str(url).strip()
+        if not url:
+            return None
+        if url.startswith("b2://"):
+            return f"{self.yumo_cdn_base}/{url[len('b2://'):].lstrip('/')}"
+        if url.startswith(("http://", "https://", "//")):
+            return url
+        # caminho relativo do CDN: "chapters/72/121-67326/x.avif", "/mangas/..", etc.
+        if re.match(r"^/?(?:chapters|mangas|yumu)/", url, re.IGNORECASE):
+            return f"{self.yumo_cdn_base}/{url.lstrip('/')}"
+        return url
+
+    def _yumo_get_json(self, path: str, params: dict | None = None, with_key: bool = False):
+        url = path if path.startswith("http") else f"{self.yumo_api_base}/{path.lstrip('/')}"
+        response = requests.get(
+            url,
+            params=params,
+            timeout=self.args.timeout,
+            headers=self._yumo_headers(with_key=with_key),
+        )
+        response.raise_for_status()
+        return response.json()
+
+    @staticmethod
+    def _yumo_first(data, keys: tuple[str, ...], default=None):
+        if isinstance(data, dict):
+            for key in keys:
+                if data.get(key) not in (None, "", []):
+                    return data.get(key)
+        return default
+
+    @staticmethod
+    def _yumo_listing(payload, keys=("results", "data", "mangas", "items", "list")):
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            for key in keys:
+                value = payload.get(key)
+                if isinstance(value, list):
+                    return value
+            for value in payload.values():
+                if isinstance(value, dict):
+                    nested = MangaReader._yumo_listing(value, keys)
+                    if nested:
+                        return nested
+        return []
+
+    def _is_yumo_source(self, source_url: str) -> bool:
+        return bool(
+            source_url.startswith("yumo://")
+            or re.search(r"(?:^https?://)?(?:www\.|api\.)?yo(?:mu|um)mangas\.com", source_url or "", re.IGNORECASE)
+        )
+
+    def _yumo_manga_id_from_source(self, source_url: str) -> str | None:
+        match = re.search(r"yumo://manga/([^/?#]+)", source_url, re.IGNORECASE)
+        if match:
+            return unquote(match.group(1))
+        match = re.search(r"yumo://chapter/([^/]+)/[^/?#]+", source_url, re.IGNORECASE)
+        if match:
+            return unquote(match.group(1))
+        match = re.search(r"yo(?:mu|um)mangas\.com/(?:manga|obra|series?|mangas)/([^/?#]+)", source_url, re.IGNORECASE)
+        if match:
+            return unquote(match.group(1))
+        return None
+
+    def _yumo_chapter_parts(self, source_url: str) -> tuple[str, str] | None:
+        match = re.search(r"yumo://chapter/([^/]+)/([^/?#]+)", source_url, re.IGNORECASE)
+        if match:
+            return unquote(match.group(1)), unquote(match.group(2))
+        match = re.search(
+            r"yo(?:mu|um)mangas\.com/(?:manga|obra|series?|mangas)/([^/]+)/(?:cap(?:itulo)?|chapter|ch)[-/]?([^/?#]+)",
+            source_url,
+            re.IGNORECASE,
+        )
+        if match:
+            return unquote(match.group(1)), unquote(match.group(2))
+        return None
+
+    def _yumo_manga_url(self, manga_id) -> str:
+        return f"yumo://manga/{manga_id}"
+
+    def _yumo_chapter_url(self, manga_id, chapter_id) -> str:
+        return f"yumo://chapter/{manga_id}/{chapter_id}"
+
+    def _yumo_normalize_result(self, raw) -> dict | None:
+        if not isinstance(raw, dict):
+            return None
+        manga_id = self._yumo_first(raw, ("id", "slug", "manga_id", "_id", "uuid"))
+        title = self._yumo_first(raw, ("title", "name", "manga_title", "titulo"))
+        if manga_id is None or not title:
+            return None
+        poster = self._yumo_first(raw, ("cover", "poster", "thumbnail", "image", "cover_url", "capa"))
+        return {
+            "title": str(title).strip(),
+            "url": self._yumo_manga_url(manga_id),
+            "id": str(manga_id),
+            "source": "yumo",
+            "provider": "yumo",
+            "language": "pt-br",
+            "poster": self._yumo_resolve_asset(poster),
+            "description": self._yumo_first(raw, ("description", "synopsis", "sinopse", "resumo")),
+        }
+
+    def search_yumo(self, keyword: str, limit: int = 12) -> dict:
+        keyword = keyword.strip()
+        if not keyword:
+            raise ValueError("Digite o nome do manga para buscar.")
+        candidates = [
+            # endpoint confirmado: GET /mangas?query=<kw> -> {mangas:[...]}
+            ("mangas", {"query": keyword}),
+            ("mangas", {"query": keyword, "limit": limit}),
+            ("mangas", {"search": keyword}),
+        ]
+        results: list[dict] = []
+        seen: set[str] = set()
+        last_error: Exception | None = None
+        for path, params in candidates:
+            try:
+                payload = self._yumo_get_json(path, params)
+            except Exception as exc:
+                last_error = exc
+                continue
+            for raw in self._yumo_listing(payload):
+                item = self._yumo_normalize_result(raw)
+                if item and item["id"] not in seen:
+                    seen.add(item["id"])
+                    results.append(item)
+            if results:
+                break
+        if not results and last_error:
+            raise RuntimeError(f"Nao consegui buscar no YumoMangas. Detalhe: {last_error}")
+        results = self._rank_search_results(keyword, results, limit)
+        return {
+            "ok": True,
+            "provider": "yumo",
+            "api_url": self.yumo_api_base,
+            "keyword": keyword,
+            "count": len(results),
+            "results": results,
+        }
+
+    def _yumo_fetch_manga_payload(self, manga_id: str) -> dict:
+        candidates = [
+            f"mangas/{manga_id}",   # confirmado -> {manga:{...}}
+            f"manga/{manga_id}",
+        ]
+        last_error: Exception | None = None
+        for path in candidates:
+            try:
+                payload = self._yumo_get_json(path)
+            except Exception as exc:
+                last_error = exc
+                continue
+            if isinstance(payload, dict) and payload:
+                for key in ("manga", "data"):
+                    if isinstance(payload.get(key), dict):
+                        return payload[key]
+                return payload
+        if last_error:
+            raise RuntimeError(f"Nao consegui carregar a obra no YomuMangas. Detalhe: {last_error}")
+        raise RuntimeError("YomuMangas nao retornou dados da obra.")
+
+    def _yumo_chapter_listing(self, manga_id: str, payload: dict) -> list:
+        # detalhe traz chapters como objeto {total,first,last}; lista real vem do endpoint dedicado
+        for path in (
+            f"mangas/{manga_id}/chapters",   # confirmado -> {chapters:[{id,chapter,...}]}
+            f"manga/{manga_id}/chapters",
+        ):
+            try:
+                extra = self._yumo_get_json(path)
+            except Exception:
+                continue
+            chapters = self._yumo_listing(extra, keys=("chapters", "capitulos", "data", "results"))
+            if chapters:
+                return chapters
+        # fallback: chapters inline (caso a API mude)
+        inline = payload.get("chapters") if isinstance(payload, dict) else None
+        if isinstance(inline, list):
+            return inline
+        return []
+
+    def _fetch_yumo_chapters(self, source_url: str, preferred_chapter: str | None = None) -> list[Chapter]:
+        manga_id = self._yumo_manga_id_from_source(source_url)
+        if not manga_id:
+            raise ValueError("Informe uma URL/ID de obra do YumoMangas.")
+        payload = self._yumo_fetch_manga_payload(manga_id)
+        chapters: list[Chapter] = []
+        seen: set[str] = set()
+        for raw in self._yumo_chapter_listing(manga_id, payload):
+            if not isinstance(raw, dict):
+                continue
+            chapter_id = self._yumo_first(raw, ("id", "slug", "chapter_id", "_id", "number", "num"))
+            if chapter_id is None:
+                continue
+            chapter_id = str(chapter_id)
+            if chapter_id in seen:
+                continue
+            seen.add(chapter_id)
+            number_raw = self._yumo_first(raw, ("number", "num", "chapter", "capitulo", "no"))
+            if number_raw not in (None, ""):
+                number_text = str(number_raw)
+            else:
+                label_for_num = str(self._yumo_first(raw, ("title", "name", "label")) or "")
+                number_text = first_match(r"(\d+(?:\.\d+)?)", label_for_num) or chapter_id
+            title = self._yumo_first(raw, ("title", "name", "label", "titulo"))
+            chapters.append(
+                Chapter(
+                    url=self._yumo_chapter_url(manga_id, chapter_id),
+                    number=parse_float(number_text),
+                    number_text=number_text,
+                    chapter_id=chapter_id,
+                    title=str(title).strip() if title else None,
+                )
+            )
+        chapters.sort(key=lambda c: (c.number is None, c.number or 0, c.chapter_id or ""))
+        return chapters
+
+    def _yumo_extract_images(self, payload) -> list[str]:
+        entries = self._yumo_listing(
+            payload, keys=("images", "pages", "urls", "imageUrls", "image_urls", "data")
+        )
+        urls: list[str] = []
+        for entry in entries:
+            if isinstance(entry, str):
+                url = entry
+            elif isinstance(entry, dict):
+                url = self._yumo_first(entry, ("url", "src", "image", "link", "file", "path"))
+            else:
+                url = None
+            if url:
+                resolved = self._yumo_resolve_asset(url)
+                if resolved:
+                    urls.append(resolved)
+        return urls
+
+    def _load_yumo_chapter(self, url: str) -> dict:
+        with self.lock:
+            parts = self._yumo_chapter_parts(url)
+            if not parts:
+                chapters = self._fetch_yumo_chapters(url)
+                selected = self._select_chapter(chapters, url)
+                if not selected:
+                    raise RuntimeError("Nenhum capitulo do YumoMangas foi selecionado automaticamente.")
+                url = selected.url
+                parts = self._yumo_chapter_parts(url)
+            if not parts:
+                raise ValueError("Informe uma URL de capitulo do YumoMangas.")
+            manga_id, chapter_id = parts
+
+            candidates = [
+                f"mangas/{manga_id}/chapters/{chapter_id}",   # confirmado (AUTH yomu-api-key)
+                f"manga/{manga_id}/chapters/{chapter_id}",
+                f"chapters/{chapter_id}",
+            ]
+            payload: dict = {}
+            image_urls: list[str] = []
+            last_error: Exception | None = None
+            for path in candidates:
+                try:
+                    data = self._yumo_get_json(path, with_key=True)
+                except Exception as exc:
+                    last_error = exc
+                    continue
+                inner = data["data"] if isinstance(data, dict) and isinstance(data.get("data"), (dict, list)) else data
+                image_urls = self._yumo_extract_images(inner)
+                if image_urls:
+                    payload = inner if isinstance(inner, dict) else {}
+                    break
+            if not image_urls:
+                detail = f" Detalhe: {last_error}" if last_error else ""
+                raise RuntimeError(f"O YumoMangas nao retornou imagens para este capitulo.{detail}")
+
+            title = self._yumo_first(payload, ("title", "name", "label", "titulo"))
+            previous_url: str | None = None
+            next_url: str | None = None
+            try:
+                neighbors = self._fetch_yumo_chapters(self._yumo_manga_url(manga_id))
+                previous_url, next_url = self._find_neighbors(neighbors, url)
+            except Exception:
+                previous_url, next_url = None, None
+
+            number_text = str(chapter_id)
+            label = clean_filename(f"yumo-{manga_id}-chapter-{chapter_id}", fallback="yumo-chapter")
+            session = requests.Session()
+            session.headers.update(self._yumo_headers())
+            cache_dir = self.cache.new_chapter_dir(label)
+            self.state = ChapterState(
+                url=url,
+                label=label,
+                image_urls=image_urls,
+                cache_dir=cache_dir,
+                session=session,
+                previous_url=previous_url,
+                next_url=next_url,
+            )
+            return {
+                "ok": True,
+                "provider": "yumo",
+                "api_url": self.yumo_api_base,
+                "url": url,
+                "source_url": url,
+                "manga_id": manga_id,
+                "chapter_id": f"yumo:{manga_id}:{chapter_id}",
+                "label": label,
+                "title": str(title).strip() if title else None,
+                "number": parse_float(number_text),
+                "number_text": number_text,
+                "language": "pt-br",
+                "count": len(image_urls),
+                "previous": previous_url,
+                "next": next_url,
+                "images": [
+                    {"index": index, "src": f"/api/image/{index}?v={int(time.time())}"}
+                    for index in range(1, len(image_urls) + 1)
+                ],
+            }
+
     def search_noveltoon(self, keyword: str, limit: int = 12, lang: str = "en") -> dict:
         keyword = keyword.strip()
         if not keyword:
@@ -3661,6 +4574,7 @@ class MangaReader:
                     "limit": scan_limit,
                     "includes[]": ["cover_art", "author", "artist"],
                     "contentRating[]": ["safe"],
+                    "hasAvailableChapters": "true",
                     "order[relevance]": "desc",
                 },
             )
@@ -3682,11 +4596,14 @@ class MangaReader:
                         "poster": cover_urls[0] if cover_urls else None,
                         "poster_fallbacks": cover_urls[1:],
                         "description": first_localized_text(attrs.get("description")),
+                        "descriptions": attrs.get("description") or {},
                         "alternative_titles": [
                             first_localized_text(alt_title) or ""
                             for alt_title in attrs.get("altTitles", [])
                         ],
                         "content_rating": attrs.get("contentRating"),
+                        "available_translated_languages": attrs.get("availableTranslatedLanguages") or [],
+                    "available_translated_languages": attrs.get("availableTranslatedLanguages") or [],
                         "genres": [
                             first_localized_text((tag.get("attributes") or {}).get("name")) or ""
                             for tag in attrs.get("tags", [])
@@ -3714,6 +4631,7 @@ class MangaReader:
             "includes[]": ["cover_art", "author", "artist"],
             "contentRating[]": ["safe"],
             "status[]": ["ongoing"],
+            "hasAvailableChapters": "true",
             "order[latestUploadedChapter]": "desc",
         }
         try:
@@ -3739,11 +4657,13 @@ class MangaReader:
                     "poster": cover_urls[0] if cover_urls else None,
                     "poster_fallbacks": cover_urls[1:],
                     "description": first_localized_text(attrs.get("description")),
+                    "descriptions": attrs.get("description") or {},
                     "alternative_titles": [
                         first_localized_text(alt_title) or ""
                         for alt_title in attrs.get("altTitles", [])
                     ],
                     "content_rating": attrs.get("contentRating"),
+                    "available_translated_languages": attrs.get("availableTranslatedLanguages") or [],
                     "genres": [
                         first_localized_text((tag.get("attributes") or {}).get("name")) or ""
                         for tag in attrs.get("tags", [])
@@ -3758,6 +4678,67 @@ class MangaReader:
             "results": results[:limit],
         }
 
+    def latest_mangadex(self, limit: int = 24, lang: str = "") -> dict:
+        """Feed de recem-lancados: ordena por ultimo capitulo enviado. Inclui autor + data."""
+        params: dict = {
+            "limit": min(max(limit, 1), 50),
+            "includes[]": ["cover_art", "author", "artist"],
+            "contentRating[]": ["safe"],
+            "hasAvailableChapters": "true",
+            "order[latestUploadedChapter]": "desc",
+        }
+        if lang:
+            params["availableTranslatedLanguage[]"] = [lang]
+        try:
+            payload = self._mangadex_get("/manga", params)
+        except requests.HTTPError:
+            params.pop("order[latestUploadedChapter]", None)
+            payload = self._mangadex_get("/manga", params)
+
+        results: list[dict] = []
+        for item in payload.get("data", []):
+            if not isinstance(item, dict):
+                continue
+            manga_id = item.get("id")
+            attrs = item.get("attributes") or {}
+            if not manga_id:
+                continue
+            cover = self._mangadex_cover_filename(item)
+            cover_urls = self._mangadex_cover_urls(manga_id, cover)
+            authors: list[str] = []
+            for rel in item.get("relationships", []) or []:
+                if rel.get("type") in ("author", "artist"):
+                    name = (rel.get("attributes") or {}).get("name")
+                    if name and name not in authors:
+                        authors.append(name)
+            results.append(
+                {
+                    "title": first_localized_text(attrs.get("title")) or manga_id,
+                    "url": self._mangadex_manga_url(manga_id),
+                    "id": manga_id,
+                    "poster": cover_urls[0] if cover_urls else None,
+                    "poster_fallbacks": cover_urls[1:],
+                    "description": first_localized_text(attrs.get("description")),
+                    "descriptions": attrs.get("description") or {},
+                    "alternative_titles": [
+                        first_localized_text(alt_title) or ""
+                        for alt_title in attrs.get("altTitles", [])
+                    ],
+                    "content_rating": attrs.get("contentRating"),
+                    "available_translated_languages": attrs.get("availableTranslatedLanguages") or [],
+                    "genres": [
+                        first_localized_text((tag.get("attributes") or {}).get("name")) or ""
+                        for tag in attrs.get("tags", [])
+                    ],
+                    "latest_chapter": attrs.get("lastChapter") or "",
+                    "updated_at": attrs.get("updatedAt") or "",
+                    "authors": authors,
+                    "provider": "mangadex",
+                    "section": "Recem-lancados",
+                }
+            )
+        return {"ok": True, "provider": "mangadex", "results": results[:limit]}
+
     def catalog_mangadex(
         self,
         genres: dict[str, str],
@@ -3767,23 +4748,27 @@ class MangaReader:
         tag_ids = self._mangadex_tag_ids()
         sections: dict[str, list[dict]] = {}
         seen: set[str] = set()
-        scan_limit = min(max(limit_per_genre * 4, 24), 100)
+        scan_limit = min(max(limit_per_genre * 2, 8), 30)
 
-        for section, genre_name in genres.items():
+        def fetch_section(section: str, genre_name: str) -> tuple[str, list[dict]]:
             tag_id = tag_ids.get(normalize_match_text(genre_name))
             if not tag_id:
-                sections[section] = []
-                continue
+                return section, []
             params: dict = {
                 "limit": scan_limit,
                 "includes[]": ["cover_art", "author", "artist"],
                 "contentRating[]": ["safe"],
                 "includedTags[]": [tag_id],
-                "order[followedCount]": "desc",
+                "hasAvailableChapters": "true",
+                "order[latestUploadedChapter]": "desc",
             }
             if lang:
                 params["availableTranslatedLanguage[]"] = [lang]
-            payload = self._mangadex_get("/manga", params)
+            try:
+                payload = self._mangadex_get("/manga", params)
+            except requests.HTTPError:
+                params.pop("order[latestUploadedChapter]", None)
+                payload = self._mangadex_get("/manga", params)
             items: list[dict] = []
             for manga_item in payload.get("data", []):
                 if not isinstance(manga_item, dict):
@@ -3792,9 +4777,8 @@ class MangaReader:
                 attrs = manga_item.get("attributes") or {}
                 cover = self._mangadex_cover_filename(manga_item)
                 cover_urls = self._mangadex_cover_urls(manga_id, cover)
-                if not manga_id or manga_id in seen or not cover_urls:
+                if not manga_id or not cover_urls:
                     continue
-                seen.add(manga_id)
                 items.append(
                     {
                         "title": first_localized_text(attrs.get("title")) or manga_id,
@@ -3803,11 +4787,14 @@ class MangaReader:
                         "poster": cover_urls[0],
                         "poster_fallbacks": cover_urls[1:],
                         "description": first_localized_text(attrs.get("description")),
+                        "descriptions": attrs.get("description") or {},
                         "alternative_titles": [
                             first_localized_text(alt_title) or ""
                             for alt_title in attrs.get("altTitles", [])
                         ],
                         "content_rating": attrs.get("contentRating"),
+                        "available_translated_languages": attrs.get("availableTranslatedLanguages") or [],
+                    "available_translated_languages": attrs.get("availableTranslatedLanguages") or [],
                         "genres": [
                             first_localized_text((tag.get("attributes") or {}).get("name")) or ""
                             for tag in attrs.get("tags", [])
@@ -3818,7 +4805,25 @@ class MangaReader:
                 )
                 if len(items) >= limit_per_genre:
                     break
-            sections[section] = items
+            return section, items
+
+        max_workers = min(8, max(1, len(genres)))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(fetch_section, section, genre_name)
+                for section, genre_name in genres.items()
+            ]
+            for future in as_completed(futures):
+                section, items = future.result()
+                unique_items: list[dict] = []
+                for item in items:
+                    manga_id = str(item.get("id") or "")
+                    if manga_id and manga_id in seen:
+                        continue
+                    if manga_id:
+                        seen.add(manga_id)
+                    unique_items.append(item)
+                sections[section] = unique_items
 
         return {
             "ok": True,
@@ -3827,6 +4832,39 @@ class MangaReader:
             "sections": sections,
             "count": sum(len(items) for items in sections.values()),
         }
+
+    def anilist_trending_titles(self, limit: int = 40) -> list[str]:
+        query = """
+        query Trending($perPage: Int) {
+          Page(perPage: $perPage) {
+            media(type: MANGA, sort: TRENDING_DESC, isAdult: false) {
+              title { romaji english native }
+            }
+          }
+        }
+        """
+        try:
+            response = requests.post(
+                ANILIST_GRAPHQL_URL,
+                json={"query": query, "variables": {"perPage": min(max(limit, 1), 50)}},
+                timeout=self.args.timeout,
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "User-Agent": DEFAULT_HEADERS["User-Agent"],
+                },
+            )
+            response.raise_for_status()
+            media = (((response.json().get("data") or {}).get("Page") or {}).get("media") or [])
+        except Exception:
+            return []
+        titles: list[str] = []
+        for entry in media:
+            names = entry.get("title") or {}
+            for value in (names.get("english"), names.get("romaji"), names.get("native")):
+                if value:
+                    titles.append(str(value))
+        return titles
 
     def anilist_metadata(self, title: str) -> dict:
         title = normalize_text(title)
@@ -4744,6 +5782,7 @@ class MangaReader:
                 if cover else None
             ),
             "description": first_localized_text(attrs.get("description")),
+            "descriptions": attrs.get("description") or {},
             "latest_chapter": attrs.get("lastChapter"),
             "authors": authors,
             "genres": [
@@ -4906,10 +5945,15 @@ class MangaReader:
                 chapters = self._fetch_readfull_chapters(source_url, preferred_chapter)
             elif self._is_noveltoon_source(source_url):
                 chapters = self._fetch_noveltoon_chapters(source_url, lang, preferred_chapter)
+            elif self._is_yumo_source(source_url):
+                chapters = self._fetch_yumo_chapters(source_url, preferred_chapter)
+            elif self._is_sakura_source(source_url):
+                chapters = self._fetch_sakura_chapters(source_url, preferred_chapter)
             else:
                 raise ValueError(
                     "Fonte nao suportada para capitulos. Use MangaDex, MangaLivre, MangasBrasuka, "
-                    "Toomics, One Piece Project, DragonTea, MangaKatana, ReadFull ou NovelToon."
+                    "Toomics, One Piece Project, DragonTea, MangaKatana, ReadFull, NovelToon, "
+                    "YumoMangas ou Sakura Mangas."
                 )
             selected = self._select_chapter(chapters, source_url, preferred_chapter)
             display_chapters = list(reversed(chapters))
@@ -4924,12 +5968,14 @@ class MangaReader:
                 else "pieceproject" if self._is_pieceproject_source(source_url)
                 else "readfull" if self._is_readfull_source(source_url)
                 else "noveltoon" if self._is_noveltoon_source(source_url)
+                else "yumo" if self._is_yumo_source(source_url)
+                else "sakura" if self._is_sakura_source(source_url)
                 else "unknown"
             )
             language = (
                 "en"
                 if provider in {"mangakatana", "readfull"}
-                else "pt-br" if provider in {"pieceproject", "mangalivre", "mangasbrasuka"}
+                else "pt-br" if provider in {"pieceproject", "mangalivre", "mangasbrasuka", "yumo", "sakura"}
                 else normalize_lang(lang or "pt-br")
             )
 
@@ -4963,6 +6009,8 @@ class MangaReader:
             or (self._is_mangadex_source(source_url) and self._mangadex_chapter_id_from_source(source_url))
             or (self._is_pieceproject_source(source_url) and self._pieceproject_chapter_number_from_source(source_url))
             or (self._is_noveltoon_source(source_url) and self._noveltoon_chapter_parts(source_url))
+            or (self._is_yumo_source(source_url) and self._yumo_chapter_parts(source_url))
+            or self._is_sakura_source(source_url)
         ):
             return self.load_chapter(source_url)
 
@@ -4994,6 +6042,12 @@ class MangaReader:
         if self._is_noveltoon_source(url) and self._noveltoon_chapter_parts(url):
             return self._load_noveltoon_chapter(url)
 
+        if self._is_yumo_source(url):
+            return self._load_yumo_chapter(url)
+
+        if self._is_sakura_source(url):
+            return self._load_sakura_chapter(url)
+
         if self._is_mangadex_source(url) and self._mangadex_chapter_id_from_source(url):
             return self._load_mangadex_chapter(url)
 
@@ -5002,7 +6056,8 @@ class MangaReader:
 
         raise ValueError(
             "Fonte de capitulo nao suportada. Use MangaDex, MangaLivre, MangasBrasuka, "
-            "Toomics, One Piece Project, DragonTea, MangaKatana, ReadFull ou NovelToon."
+            "Toomics, One Piece Project, DragonTea, MangaKatana, ReadFull, NovelToon, "
+            "YumoMangas ou Sakura Mangas."
         )
 
     def _load_pieceproject_chapter(self, url: str) -> dict:
@@ -5018,7 +6073,9 @@ class MangaReader:
             raise ValueError("Capitulo do piecePROJECT nao encontrado.")
 
         number_text = str(selected["number"])
-        image_urls = [str(page).strip() for page in selected.get("pages") or [] if str(page).strip()]
+        image_urls = dedupe_image_urls(
+            [str(page).strip() for page in selected.get("pages") or [] if str(page).strip()]
+        )
         if not image_urls:
             raise RuntimeError("O piecePROJECT nao retornou imagens para este capitulo.")
 
@@ -5088,11 +6145,11 @@ class MangaReader:
         if not base_url or not chapter_hash or not pages:
             raise RuntimeError("A API do MangaDex nao retornou paginas para este capitulo.")
 
-        image_urls = [
+        image_urls = dedupe_image_urls([
             f"{base_url}/data/{chapter_hash}/{filename}"
             for filename in pages
             if isinstance(filename, str)
-        ]
+        ])
         if not image_urls:
             raise RuntimeError("A API do MangaDex nao retornou imagens validas.")
 
@@ -5299,6 +6356,17 @@ class MangaReader:
         for name, value in session_cookies.items():
             session.cookies.set(name, value)
 
+        page_ref_url = self._mangasbrasuka_page_ref_url(image_url)
+        if page_ref_url:
+            page_html = self._mangasbrasuka_get_html(page_ref_url, referer)
+            page_images = self._mangasbrasuka_image_urls_from_html(page_html, page_ref_url)
+            if not page_images:
+                raise RuntimeError(f"Nao encontrei imagem do MangasBrasuka na pagina {index}.")
+            image_url = page_images[0]
+            referer = page_ref_url
+            headers["Referer"] = page_ref_url
+            session.headers.update({"Referer": page_ref_url})
+
         read_timeout = min(max(float(self.args.timeout), 12.0), 25.0)
         timeout = (8.0, read_timeout)
         last_error: Exception | None = None
@@ -5338,6 +6406,8 @@ class MangaReader:
                 raise RuntimeError(f"Falha ao baixar pagina {index}: {last_error}")
 
             content_type = response.headers.get("Content-Type", "image/jpeg").split(";")[0]
+            if not content_type.startswith("image/"):
+                content_type = mimetypes.guess_type(urlparse(image_url).path)[0] or "image/jpeg"
             filename = filename_from_url(image_url, index, content_type)
             target = cache_dir / filename
             tmp_target = target.with_name(f"{target.name}.part")
@@ -5505,6 +6575,8 @@ class MangaReader:
             return self._mangakatana_chapter_label(url)
         if self._is_dragontea_source(url):
             return self._dragontea_label_from_url(url)
+        if self._is_sakura_source(url):
+            return self._sakura_label_from_url(url)
         slug = slug_from_url(url) or "chapter"
         number = chapter_number_text_from_url(url) or str(int(time.time()))
         return clean_filename(f"{slug}-chapter-{number}")
@@ -5743,6 +6815,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--mangalivre-base-url",
         default=os.environ.get("MANGALIVRE_BASE_URL", DEFAULT_MANGALIVRE_BASE_URL),
         help="URL base do MangaLivre. Padrao: https://mangalivre.blog",
+    )
+    parser.add_argument(
+        "--sakura-base-url",
+        default=os.environ.get("SAKURA_BASE_URL", DEFAULT_SAKURA_BASE_URL),
+        help="URL base do Sakura Mangas. Padrao: https://sakuramangas.org",
+    )
+    parser.add_argument(
+        "--sakura-cdp-url",
+        default=os.environ.get("SAKURA_CDP_URL", DEFAULT_SAKURA_CDP_URL),
+        help="Endpoint CDP de um Chrome/Brave ja aberto (resolve Cloudflare). Padrao: http://127.0.0.1:9222",
+    )
+    parser.add_argument(
+        "--sakura-profile-dir",
+        default=os.environ.get("SAKURA_PROFILE_DIR", DEFAULT_SAKURA_PROFILE_DIR),
+        help="Perfil Chromium persistente p/ cookies do Cloudflare. Padrao: .sakura-browser-profile",
+    )
+    parser.add_argument(
+        "--sakura-challenge-timeout",
+        type=int,
+        default=int(os.environ.get("SAKURA_CHALLENGE_TIMEOUT", "180")),
+        help="Segundos de espera pela verificacao do Cloudflare. Padrao: 180",
     )
     return parser
 
