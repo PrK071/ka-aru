@@ -3,6 +3,105 @@ downloads_brasuka/
 __pycache__/
 *.pyc
 .reader_home_cache/
-frontend/node_modules/
+backend/.cache/
 frontend/dist/
 debug_brasuka_last.html
+
+# Node (nunca versionar dependencias)
+node_modules/
+dist/
+
+# ===========================================================================
+# CONFIDENCIAL / RISCO DE EXPOSICAO  (nunca versionar)
+# ===========================================================================
+
+# Variaveis de ambiente / segredos de app (.env.example e permitido)
+.env
+.env.*
+!.env.example
+*.local
+secrets.*
+*secret*.json
+*secrets*.y*ml
+config.local.*
+*.private.*
+
+# Chaves, certificados, SSH/GPG
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.cer
+*.der
+*.jks
+*.keystore
+*.asc
+*.gpg
+id_rsa*
+id_ed25519*
+*.ppk
+
+# Credenciais de nuvem / package managers
+credentials*.json
+service-account*.json
+gcloud-*.json
+aws_credentials*
+.aws/
+.netrc
+.npmrc
+.pypirc
+
+# Tokens / API keys
+*.token
+api_keys*
+*apikey*
+*api_key*
+
+# Cookies / sessao / Cloudflare clearance
+*.cookie
+cookies*.txt
+cookies*.json
+*clearance*.json
+cf_clearance*
+
+# Perfis de navegador (cookies, Login Data, cf_clearance) e seus arquivos
+*-browser-profile/
+*-profile/
+.*-profile/
+**/Cookies
+**/Login Data
+**/Web Data
+**/Network/Cookies
+**/Trust Tokens
+**/Vpn Tokens
+
+# Logs / capturas de rede (podem conter headers/tokens)
+*.log
+*.har
+
+# Dumps / temporarios de banco (mangas.db PODE ser publicado; estes nao)
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.sql
+*.sql.gz
+*.dump
+
+# Caches / temporarios do projeto
+.tmp_images/
+.tmp-*/
+.tmp_*/
+.cache/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Chat-saves / backups locais e bancos exportados (nao publicar)
+leviathan-*.json
+*.session.json
+*.sqlite-export.json

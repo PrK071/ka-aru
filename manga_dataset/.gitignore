@@ -1,0 +1,33 @@
+# Segredos / ambiente
+.env
+
+# Scrapers de fontes especificas ficam LOCAIS (nao publicar as fontes).
+# So o nucleo generico vai pro repo.
+scrapers/*.py
+!scrapers/__init__.py
+!scrapers/base.py
+!scrapers/browser_base.py
+!scrapers/example_source.py
+
+# Imagens temporarias (apagadas a cada pagina; nunca versionar)
+.tmp_images/
+
+# Perfil(is) persistente(s) de navegador (cookies/clearance) e debug
+*-profile/
+.*-profile/
+_dbg_*
+.tmp_*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# SQLite WAL/SHM
+*.db-wal
+*.db-shm
+
+# Banco do catalogo: NAO publicar
+mangas.db
+*.db
