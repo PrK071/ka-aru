@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 .reader_home_cache/
 backend/.cache/
+backend/static/covers/
 frontend/dist/
 debug_brasuka_last.html
 
@@ -69,6 +70,9 @@ cf_clearance*
 *-browser-profile/
 *-profile/
 .*-profile/
+.sakura-browser-profile/
+.yomu-browser-profile/
+.dragontea-profile/
 **/Cookies
 **/Login Data
 **/Web Data
@@ -93,6 +97,7 @@ cf_clearance*
 .tmp_images/
 .tmp-*/
 .tmp_*/
+.tmp-sakura-test/
 .cache/
 
 # OS / IDE

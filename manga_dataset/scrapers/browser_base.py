@@ -171,7 +171,7 @@ class PlaywrightScraper(BaseScraper):
         return page
 
     @staticmethod
-    def _wait_cloudflare(page, timeout_s: int = 45) -> None:
+    def _wait_cloudflare(page, timeout_s: int = 90) -> None:
         """Espera o desafio 'Just a moment' do Cloudflare sumir (auto-resolve)."""
         import time as _t
         deadline = _t.monotonic() + timeout_s

@@ -31,3 +31,8 @@ venv/
 # Banco do catalogo: NAO publicar
 mangas.db
 *.db
+
+# Cache de capas / arquivos estaticos baixados (nunca versionar)
+static/covers/
+covers/
+*.cover-cache/
