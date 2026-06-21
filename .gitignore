@@ -3,6 +3,33 @@ downloads_brasuka/
 __pycache__/
 *.pyc
 .reader_home_cache/
-frontend/node_modules/
+backend/.cache/
 frontend/dist/
 debug_brasuka_last.html
+
+# Node (nunca versionar dependencias)
+node_modules/
+dist/
+
+# Perfis de navegador (Cloudflare/Playwright)
+.sakura-browser-profile/
+.yomu-browser-profile/
+.dragontea-profile/
+*-browser-profile/
+
+# Segredos / credenciais / APIs (NUNCA versionar). .env.example e permitido.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+credentials*.json
+service-account*.json
+*secret*.json
+*.token
+api_keys*
+.tmp_images/
+.tmp-sakura-test/
