@@ -24,6 +24,7 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import re
 import sys
 import time
@@ -34,6 +35,14 @@ from urllib.parse import urlparse
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+# Carrega .env do projeto (proxy/keys) se python-dotenv estiver instalado (opcional).
+try:
+    from dotenv import load_dotenv  # noqa: E402
+
+    load_dotenv(PROJECT_ROOT / ".env")
+except Exception:
+    pass
 
 import cloudscraper  # noqa: E402
 
@@ -1049,9 +1058,95 @@ def probe_cloudscraper(scraper, url: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# Preflight do proxy (valida IP limpo ANTES de gastar tentativas no sakura)
+# --------------------------------------------------------------------------- #
+IP_ECHO_URLS = ("https://api.ipify.org?format=json", "https://ifconfig.me/all.json")
+
+
+def _egress_ip(proxy: ProxyConfig | None) -> tuple[str, str]:
+    """Retorna (ip, erro) do IP de saida -- via proxy se houver, senao direto."""
+    import requests
+
+    proxies = proxy.requests_proxies() if proxy else None
+    for url in IP_ECHO_URLS:
+        try:
+            r = requests.get(url, proxies=proxies, timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                ip = data.get("ip") or data.get("ip_addr") or ""
+                if ip:
+                    return (ip, "")
+        except Exception as exc:
+            last = str(exc)
+    return ("", locals().get("last", "sem resposta dos servicos de echo de IP"))
+
+
+def preflight_proxy(args) -> int:
+    """Verifica o proxy SEM abrir o leitor: mostra IP de saida + testa o sakura.
+
+    Confirma que (a) o proxy responde e o IP de egress mudou, e (b) o Cloudflare
+    do sakuramangas deixa um GET simples passar (nao retorna 1020/403). Assim
+    sabemos se o IP esta limpo antes de gastar uma tentativa real de extracao.
+    """
+    proxy = ProxyConfig.parse(args.proxy) if args.proxy else None
+    if proxy is None:
+        print(">> Sem --proxy (nem SAKURA_PROXY). Testando IP/acesso DIRETO (sem proxy).")
+    else:
+        print(f">> Proxy: {proxy.scheme}://{proxy.host}:{proxy.port}"
+              + (f" (auth: {proxy.username})" if proxy.username else " (sem auth)"))
+
+    # 1) IP direto vs IP via proxy -> confirma que o proxy roteia.
+    direct_ip, _ = _egress_ip(None)
+    print(f">> IP direto (sua conexao): {direct_ip or '??'}")
+    egress_ip = direct_ip
+    if proxy is not None:
+        egress_ip, err = _egress_ip(proxy)
+        if not egress_ip:
+            print(f">> FALHA: proxy nao respondeu ({err}). Cheque host/porta/credenciais.")
+            return 1
+        print(f">> IP via proxy: {egress_ip}")
+        if egress_ip == direct_ip:
+            print(">> ALERTA: IP do proxy == IP direto. O proxy NAO esta roteando "
+                  "(ou e transparente). Cloudflare vera o mesmo IP bloqueado.")
+
+    # 2) GET simples no sakura via cloudscraper (detecta 1020/403/challenge).
+    base = f"{urlparse(args.chapter_url).scheme}://{urlparse(args.chapter_url).hostname}/"
+    scraper = build_cloudscraper([], "", base, proxy=proxy)
+    try:
+        r = scraper.get(base, timeout=30)
+        head = (r.text or "")[:2000].casefold()
+        blocked = "sorry, you have been blocked" in head or "attention required" in head
+        challenge = "just a moment" in head or "cf-challenge" in head
+        ray = ""
+        m = re.search(r"Ray ID:\s*([0-9a-f]+)", r.text or "", re.IGNORECASE)
+        if m:
+            ray = m.group(1)
+        print(f">> sakura GET {base} -> HTTP {r.status_code}, {len(r.content):,} bytes")
+        if blocked:
+            print(f">> RESULTADO: IP AINDA BLOQUEADO (1020){f' Ray {ray}' if ray else ''}. "
+                  "Use outro proxy/IP.")
+            return 2
+        if challenge:
+            print(">> RESULTADO: Cloudflare pede challenge (Turnstile). IP nao esta em "
+                  "blocklist dura -- da p/ resolver com browser + cf_clearance (--cf-clearance).")
+            return 0
+        if r.status_code == 200:
+            print(">> RESULTADO: IP LIMPO. Acesso HTTP passou sem block. Pode rodar a extracao.")
+            return 0
+        print(f">> RESULTADO: resposta inesperada (HTTP {r.status_code}). Inspecione manualmente.")
+        return 3
+    except Exception as exc:
+        print(f">> FALHA no GET ao sakura via proxy: {exc}")
+        return 1
+
+
+# --------------------------------------------------------------------------- #
 # Orquestracao
 # --------------------------------------------------------------------------- #
 def run(args: argparse.Namespace) -> int:
+    if args.check_proxy:
+        return preflight_proxy(args)
+
     if sync_playwright is None:
         raise RuntimeError("Playwright ausente. Instale: pip install playwright && playwright install chromium")
 
@@ -1222,9 +1317,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--captcha-timeout", type=int, default=180, help="Segundos p/ o servico resolver o captcha.")
     parser.add_argument(
         "--proxy",
-        default=None,
+        default=os.environ.get("SAKURA_PROXY"),
         help="Proxy unico p/ browser+solver+HTTP: 'http://user:pass@host:port' ou 'host:port[:user:pass]'. "
-        "Obrigatorio p/ --cf-clearance.",
+        "Padrao: variavel de ambiente SAKURA_PROXY (ou .env). Obrigatorio p/ --cf-clearance.",
+    )
+    parser.add_argument(
+        "--check-proxy",
+        action="store_true",
+        help="Preflight: so testa o proxy (IP de saida + acesso ao sakura) e sai. "
+        "Nao abre o leitor nem extrai. Use p/ confirmar IP limpo antes de gastar tentativa.",
     )
     parser.add_argument(
         "--cf-clearance",
