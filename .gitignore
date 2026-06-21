@@ -11,25 +11,92 @@ debug_brasuka_last.html
 node_modules/
 dist/
 
-# Perfis de navegador (Cloudflare/Playwright)
-.sakura-browser-profile/
-.yomu-browser-profile/
-.dragontea-profile/
-*-browser-profile/
+# ===========================================================================
+# CONFIDENCIAL / RISCO DE EXPOSICAO  (nunca versionar)
+# ===========================================================================
 
-# Segredos / credenciais / APIs (NUNCA versionar). .env.example e permitido.
+# Variaveis de ambiente / segredos de app (.env.example e permitido)
 .env
 .env.*
 !.env.example
+*.local
+secrets.*
+*secret*.json
+*secrets*.y*ml
+config.local.*
+*.private.*
+
+# Chaves, certificados, SSH/GPG
 *.key
 *.pem
 *.p12
 *.pfx
 *.crt
+*.cer
+*.der
+*.jks
+*.keystore
+*.asc
+*.gpg
+id_rsa*
+id_ed25519*
+*.ppk
+
+# Credenciais de nuvem / package managers
 credentials*.json
 service-account*.json
-*secret*.json
+gcloud-*.json
+aws_credentials*
+.aws/
+.netrc
+.npmrc
+.pypirc
+
+# Tokens / API keys
 *.token
 api_keys*
+*apikey*
+*api_key*
+
+# Cookies / sessao / Cloudflare clearance
+*.cookie
+cookies*.txt
+cookies*.json
+*clearance*.json
+cf_clearance*
+
+# Perfis de navegador (cookies, Login Data, cf_clearance) e seus arquivos
+.sakura-browser-profile/
+.yomu-browser-profile/
+.dragontea-profile/
+*-browser-profile/
+**/Cookies
+**/Login Data
+**/Web Data
+**/Network/Cookies
+**/Trust Tokens
+**/Vpn Tokens
+
+# Logs / capturas de rede (podem conter headers/tokens)
+*.log
+*.har
+
+# Dumps / temporarios de banco (mangas.db PODE ser publicado; estes nao)
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.sql
+*.sql.gz
+*.dump
+
+# Caches / temporarios do projeto
 .tmp_images/
 .tmp-sakura-test/
+.cache/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
