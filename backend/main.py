@@ -17,7 +17,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from reader_server import (
     DEFAULT_HEADERS,
@@ -326,18 +326,29 @@ app.mount("/static", CachedStaticFiles(directory=str(STATIC_DIR)), name="static"
 
 
 class MangaHomeSchema(BaseModel):
-    """Payload ENXUTO da home — so o estritamente necessario p/ o card.
+    """Payload da home — campos que o card (MangaCard.jsx) realmente renderiza.
 
-    Sem descricoes, sem descriptions_map, sem alternative_titles, sem lista de
-    capitulos e sem arrays de fallback de capa. `cover_path` aponta para o
-    arquivo LOCAL em /static/covers (servido como estatico, sem proxy em runtime).
-    `source_url` fica por ser indispensavel p/ abrir a obra no clique do card.
+    Mais enxuto que o item completo do catalogo (sem descriptions_map,
+    alternative_titles, cover_original_* nem lista de capitulos), mas COMPLETO o
+    bastante p/ o card: capa (com cadeia de fallback), sinopse, generos, autores,
+    nota e contagem de capitulos. `cover_path` aponta p/ o arquivo LOCAL em
+    /static/covers; `cover_url`/`cover_fallbacks` sao a rede de seguranca quando o
+    arquivo local ainda nao esta pronto (evita o card preto).
     """
 
     id: str
     title: str
     cover_path: str = ""
+    cover_url: str = ""
+    cover_fallbacks: list[str] = Field(default_factory=list)
+    source: str = ""
+    description: str = ""
+    genres: list[str] = Field(default_factory=list)
+    authors: list[str] = Field(default_factory=list)
+    rating: float | None = None
+    chapter_count: int | None = None
     latest_chapter: str = ""
+    updated_at: str = ""
     source_url: str = ""
 
 
@@ -366,12 +377,37 @@ def _is_home_ready(item: dict) -> bool:
 
 
 def _home_item(item: dict) -> dict:
-    """Mapeia um item completo do catalogo -> dict ENXUTO da home (cover_path local)."""
+    """Mapeia um item completo do catalogo -> dict da home p/ o card.
+
+    Mantem a capa local (cover_path) + cadeia de fallback (cover_url/fallbacks) e
+    os metadados que o card exibe (sinopse, generos, autores, nota, n de caps).
+    """
+    def _to_int(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _to_float(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     return MangaHomeSchema(
         id=str(item.get("id") or item.get("slug") or item.get("source_url") or ""),
         title=str(item.get("title") or ""),
         cover_path=str(item.get("cover_path") or item.get("cover_url") or PLACEHOLDER_URL),
+        cover_url=str(item.get("cover_url") or ""),
+        cover_fallbacks=[str(u) for u in (item.get("cover_fallbacks") or []) if str(u or "").strip()],
+        source=str(item.get("source") or ""),
+        description=str(item.get("description") or ""),
+        genres=[str(g) for g in (item.get("genres") or []) if str(g or "").strip()],
+        authors=[str(a) for a in (item.get("authors") or []) if str(a or "").strip()],
+        rating=_to_float(item.get("rating")),
+        chapter_count=_to_int(item.get("chapter_count")),
         latest_chapter=str(item.get("latest_chapter") or ""),
+        updated_at=str(item.get("updated_at") or ""),
         source_url=str(item.get("source_url") or item.get("url") or ""),
     ).model_dump()
 
