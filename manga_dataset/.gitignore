@@ -1,0 +1,20 @@
+# Segredos
+.env
+
+# Imagens temporarias (apagadas a cada pagina; nunca versionar)
+.tmp_images/
+
+# Perfil persistente do navegador (DragonTea / Cloudflare) e debug
+.dragontea-profile/
+.tmp_dragontea.png
+_dbg_*.py
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# SQLite WAL/SHM (mantenha apenas mangas.db versionado, se quiser publicar)
+*.db-wal
+*.db-shm
