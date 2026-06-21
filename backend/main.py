@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import time
 import mimetypes
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import json
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Response
@@ -18,10 +21,18 @@ from reader_server import MangaReader, fuzzy_match_score, normalize_match_text
 CATALOG_CACHE_TTL_SECONDS = 30 * 60
 SEARCH_CACHE_TTL_SECONDS = 5 * 60
 SOURCE_RESOLUTION_CACHE_TTL_SECONDS = 10 * 60
+CHAPTER_COUNT_CACHE_TTL_SECONDS = 20 * 60
+CHAPTERS_CACHE_TTL_SECONDS = 10 * 60
 IMAGE_CACHE_TTL_SECONDS = 15 * 60
-IMAGE_CACHE_MAX_ITEMS = 300
+IMAGE_CACHE_MAX_ITEMS = 1000
 ANILIST_CACHE_TTL_SECONDS = 12 * 60 * 60
+KITSU_CACHE_TTL_SECONDS = 12 * 60 * 60
+TRANSLATION_CACHE_TTL_SECONDS = 24 * 60 * 60
 DEFAULT_LIMIT = 80
+SOURCE_SEARCH_TIMEOUT_SECONDS = 5.0
+SOURCE_RESOLUTION_TIMEOUT_SECONDS = 5.0
+CATALOG_SNAPSHOT_TTL_SECONDS = 6 * 60 * 60
+CATALOG_SNAPSHOT_PATH = Path(__file__).resolve().parent / ".cache" / "catalog.json"
 
 MANGADEX_GENRES = {
     "Acao": "Action",
@@ -48,12 +59,15 @@ SOURCE_LABELS = {
     "pieceproject": "One Piece Project",
     "toomics": "Toomics",
     "anilist": "AniList",
+    "yumo": "YomuMangas",
+    "sakura": "Sakura Mangas",
 }
 
-SEARCH_SOURCES = ["mangasbrasuka", "mangalivre", "mangadex", "toomics"]
-PT_COMPLETE_SOURCES = ["mangasbrasuka", "mangalivre", "toomics"]
+SEARCH_SOURCES = ["yumo", "mangasbrasuka", "mangalivre", "mangadex"]
+PT_COMPLETE_SOURCES = ["yumo", "mangasbrasuka", "mangalivre"]
 
 SOURCE_RELIABILITY = {
+    "yumo": 0.96,
     "mangalivre": 0.94,
     "mangasbrasuka": 0.92,
     "toomics": 0.78,
@@ -74,6 +88,7 @@ CURATED_CATALOG = [
             "Tensei Slime",
         ],
         "url": "https://mangasbrasuka.com.br/manga/tensei-shitara-slime-datta-ken/",
+        "poster": "https://cdn.mugiverso.com/mangasbrasuka/wp-content/uploads/2026/02/that-time-i-got-reincarnated-as-a-slime-22-capa.webp",
         "provider": "mangasbrasuka",
         "section": "Fantasia",
         "genres": ["Aventura", "Fantasia", "Comedia"],
@@ -81,15 +96,26 @@ CURATED_CATALOG = [
     {
         "title": "Soul Eater",
         "aliases": ["Soul Eater"],
-        "query": "Soul Eater",
+        "url": "https://mangalivre.blog/manga/soul-eater/",
+        "poster": "https://mangalivre.blog/wp-content/uploads/2025/04/ae5b4ce8-a50d-4bbb-9cd6-7456b97fdecd.jpg.512.jpg",
         "provider": "mangalivre",
         "section": "Acao",
         "genres": ["Acao", "Fantasia", "Comedia"],
     },
     {
+        "title": "Moby Dick",
+        "aliases": ["Moby Dick", "Moby-Dick"],
+        "url": "https://mangasbrasuka.com.br/manga/moby-dick/",
+        "poster": "https://cdn.mugiverso.com/mangasbrasuka/wp-content/uploads/2026/02/Moby-Dick.webp",
+        "provider": "mangasbrasuka",
+        "section": "Drama",
+        "genres": ["Drama", "Acao", "Manhwa"],
+    },
+    {
         "title": "One Piece",
         "aliases": ["One Piece"],
         "url": "pieceproject://one-piece",
+        "poster": "https://i.ibb.co/NnFxkGJ/manga1130.jpg",
         "provider": "pieceproject",
         "section": "Aventura",
         "genres": ["Acao", "Aventura", "Comedia"],
@@ -120,9 +146,15 @@ reader = MangaReader(
     )
 )
 catalog_cache: CacheEntry | None = None
+catalog_refresh_lock = threading.Lock()
+catalog_refreshing = False
 search_cache: dict[str, CacheEntry] = {}
 source_resolution_cache: dict[str, CacheEntry] = {}
+chapter_count_cache: dict[str, CacheEntry] = {}
+chapters_cache: dict[str, CacheEntry] = {}
 anilist_cache: dict[str, CacheEntry] = {}
+kitsu_cache: dict[str, CacheEntry] = {}
+translation_cache: dict[str, CacheEntry] = {}
 image_cache: dict[str, ImageCacheEntry] = {}
 
 
@@ -137,7 +169,6 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "tauri://localhost",
     ],
     allow_methods=["GET"],
     allow_headers=["*"],
@@ -170,17 +201,81 @@ def _proxy_image_url(url: str) -> str:
     return f"/api/image?url={quote(url, safe='')}"
 
 
+def _unproxy_image_url(url: str) -> str:
+    url = str(url or "").strip()
+    if not url.startswith("/api/image?"):
+        return url
+    values = parse_qs(urlparse(url).query).get("url") or []
+    return unquote(values[0]).strip() if values else ""
+
+
+def _is_mangadex_image_url(url: str) -> bool:
+    host = urlparse(str(url or "")).netloc.lower()
+    return host == "uploads.mangadex.org" or host.endswith(".mangadex.org")
+
+
+def _cover_urls(primary: str, fallbacks: list[str]) -> tuple[str, list[str]]:
+    originals = []
+    for url in [primary, *fallbacks]:
+        url = _unproxy_image_url(url)
+        url = str(url or "").strip()
+        if _is_remote_image_url(url) and url not in originals:
+            originals.append(url)
+    if not originals:
+        return "", []
+
+    # Proxy SEMPRE o primary: backend injeta Referer correto -> evita 403 de hotlink
+    # (mugiverso/mangasbrasuka/mangalivre bloqueiam carga direta sem referer).
+    primary_proxy = _proxy_image_url(originals[0]) or originals[0]
+    fallback_urls: list[str] = []
+    for url in originals[1:]:
+        proxy = _proxy_image_url(url)
+        if proxy and proxy not in fallback_urls:
+            fallback_urls.append(proxy)
+    # ultima cartada: urls cruas (caso o proxy caia)
+    for url in originals:
+        if url not in fallback_urls:
+            fallback_urls.append(url)
+    return primary_proxy, fallback_urls
+
+
+def _refresh_cover_fields(item: dict) -> dict:
+    merged = dict(item)
+    originals: list[str] = []
+    for url in [
+        merged.get("cover_original_url"),
+        merged.get("cover_url"),
+        *(merged.get("cover_original_fallbacks") or []),
+        *(merged.get("cover_fallbacks") or []),
+    ]:
+        clean_url = _unproxy_image_url(str(url or "").strip())
+        if _is_remote_image_url(clean_url) and clean_url not in originals:
+            originals.append(clean_url)
+    if not originals:
+        return merged
+    cover_url, cover_fallbacks = _cover_urls(originals[0], originals[1:])
+    merged["cover_url"] = cover_url
+    merged["cover_original_url"] = originals[0]
+    merged["cover_fallbacks"] = cover_fallbacks
+    merged["cover_original_fallbacks"] = originals[1:]
+    return merged
+
+
 def _guess_provider(item: dict) -> str:
     provider = str(item.get("provider") or item.get("source") or "").lower()
     url = str(item.get("url") or "")
     if provider:
         return provider
+    if "yomumangas" in url or "yumomangas" in url or url.startswith("yumo://"):
+        return "yumo"
     if "mangasbrasuka" in url:
         return "mangasbrasuka"
     if "mangalivre" in url:
         return "mangalivre"
     if "toomics" in url:
         return "toomics"
+    if "sakuramangas" in url or url.startswith("sakura://"):
+        return "sakura"
     if "mangadex" in url:
         return "mangadex"
     if url.startswith("pieceproject://"):
@@ -201,6 +296,7 @@ def _normalize_manga_item(item: dict, *, section: str = "") -> dict | None:
         for url in (item.get("poster_fallbacks") or [])
         if str(url or "").strip()
     ]
+    cover_url, cover_fallbacks = _cover_urls(poster_original, fallback_originals)
     genres = [
         str(genre).strip()
         for genre in (item.get("genres") or [])
@@ -218,12 +314,18 @@ def _normalize_manga_item(item: dict, *, section: str = "") -> dict | None:
         "provider": provider,
         "source": _source_label(provider),
         "section": section or str(item.get("section") or ""),
-        "cover_url": _proxy_image_url(poster_original),
+        "cover_url": cover_url,
         "cover_original_url": poster_original,
-        "cover_fallbacks": [_proxy_image_url(url) for url in fallback_originals if _proxy_image_url(url)],
+        "cover_fallbacks": cover_fallbacks,
         "cover_original_fallbacks": fallback_originals,
         "genres": genres[:8],
         "description": item.get("description") or "",
+        "descriptions_map": item.get("descriptions") or {},
+        "latest_chapter": str(item.get("latest_chapter") or ""),
+        "updated_at": str(item.get("updated_at") or ""),
+        "chapter_languages": [
+            str(l).lower() for l in (item.get("available_translated_languages") or []) if l
+        ],
         "authors": item.get("authors") or [],
         "chapter_count": item.get("chapter_count"),
         "rating": item.get("rating"),
@@ -305,11 +407,20 @@ def _build_sections_from_items(items: list[dict], per_section: int = 18) -> list
 
 
 def _chapter_count_for_source(source_url: str) -> int:
+    cache_key = source_url.strip()
+    cached = chapter_count_cache.get(cache_key)
+    if _cache_is_fresh(cached, CHAPTER_COUNT_CACHE_TTL_SECONDS):
+        return int(cached.data.get("count") or 0)
     try:
-        payload = reader.list_chapters(source_url)
-        return int(payload.get("count") or 0)
+        if _guess_provider({"url": source_url}) == "mangadex":
+            count = int(reader.mangadex_chapter_total(source_url))  # barato, sem conteudo
+        else:
+            payload = reader.list_chapters(source_url)
+            count = int(payload.get("count") or 0)
     except Exception:
-        return 0
+        count = 0
+    chapter_count_cache[cache_key] = CacheEntry(time.time(), {"count": count})
+    return count
 
 
 def _curated_match_score(query: str, raw: dict) -> float:
@@ -365,7 +476,7 @@ def _enrich_curated_item(raw: dict) -> dict | None:
     source_url = str(item.get("source_url") or "")
     if source_url:
         try:
-            metadata = reader.manga_metadata(source_url, include_chapters=True)
+            metadata = reader.manga_metadata(source_url, include_chapters=False)
             manga = metadata.get("manga") or {}
             item["chapter_count"] = metadata.get("chapter_count") or item.get("chapter_count")
             if manga.get("description") and not item.get("description"):
@@ -376,8 +487,11 @@ def _enrich_curated_item(raw: dict) -> dict | None:
                 item["genres"] = list(dict.fromkeys([*(item.get("genres") or []), *manga["genres"]]))[:8]
             poster = str(manga.get("poster") or "").strip()
             if poster and not item.get("cover_url"):
-                item["cover_url"] = _proxy_image_url(poster)
                 item["cover_original_url"] = poster
+                item["cover_original_fallbacks"] = [
+                    *(item.get("cover_original_fallbacks") or []),
+                ]
+                item.update(_refresh_cover_fields(item))
             if manga.get("rating", {}).get("score") and not item.get("rating"):
                 item["rating"] = float(manga["rating"]["score"])
             if manga.get("status") and not item.get("status"):
@@ -399,6 +513,144 @@ def _curated_catalog_items() -> list[dict]:
         if item:
             items.append(item)
     return _dedupe(items)
+
+
+def _fast_curated_catalog_items() -> list[dict]:
+    items: list[dict] = []
+    for raw in CURATED_CATALOG:
+        payload = dict(raw)
+        if not payload.get("url"):
+            continue
+        item = _normalize_manga_item(payload, section=str(payload.get("section") or "Destaques"))
+        if item:
+            items.append(item)
+    return _dedupe(items)
+
+
+def _snapshot_payload(data: dict, limit: int | None = None) -> dict:
+    payload = _apply_fast_curated_fields(dict(data))
+    items = list(payload.get("items") or [])
+    if limit is not None:
+        payload["items"] = items[:limit]
+        payload["limit"] = limit
+    payload["sections"] = list(payload.get("sections") or [])
+    return payload
+
+
+def _apply_fast_curated_fields(data: dict) -> dict:
+    seeds = {
+        normalize_match_text(str(item.get("title") or "")): item
+        for item in _fast_curated_catalog_items()
+    }
+    if not seeds:
+        return data
+
+    def merge(item: dict) -> dict:
+        key = normalize_match_text(str(item.get("title") or ""))
+        seed = seeds.get(key)
+        if not seed:
+            return _refresh_cover_fields(item)
+        merged = dict(item)
+        for field in ("cover_url", "cover_original_url", "cover_fallbacks", "cover_original_fallbacks"):
+            if not merged.get(field) and seed.get(field):
+                merged[field] = seed[field]
+        return _refresh_cover_fields(merged)
+
+    data["items"] = [merge(dict(item)) for item in data.get("items") or []]
+    data["sections"] = [
+        {**section, "items": [merge(dict(item)) for item in section.get("items") or []]}
+        for section in data.get("sections") or []
+    ]
+    return data
+
+
+def _read_catalog_snapshot() -> dict | None:
+    try:
+        if not CATALOG_SNAPSHOT_PATH.exists():
+            return None
+        payload = json.loads(CATALOG_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or not payload.get("items"):
+            return None
+        return payload
+    except Exception:
+        return None
+
+
+def _write_catalog_snapshot(data: dict) -> None:
+    try:
+        CATALOG_SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = CATALOG_SNAPSHOT_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(CATALOG_SNAPSHOT_PATH)
+    except Exception:
+        return
+
+
+def _catalog_snapshot_age() -> float | None:
+    try:
+        return time.time() - CATALOG_SNAPSHOT_PATH.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _fast_catalog_seed(limit: int) -> dict:
+    items = _fast_curated_catalog_items()
+    sections = _build_sections_from_items(items, per_section=12) if items else []
+    data = {
+        "items": items[:limit],
+        "sections": sections,
+        "total": len(items),
+        "limit": limit,
+        "offset": 0,
+        "sources": ["MangaDex", "MangasBrasuka", "MangaLivre"],
+        "cached": True,
+        "refreshing": True,
+    }
+    return data
+
+
+def _refresh_catalog_cache(limit: int = DEFAULT_LIMIT) -> None:
+    global catalog_cache, catalog_refreshing
+    try:
+        items, sections = _catalog_sections_from_mangadex(min(max(limit, 24), 80))
+        # enrich items + section items (dedup por identidade, cap p/ nao estourar rate-limit)
+        seen_ids: set[int] = set()
+        bucket: list[dict] = []
+        for collection in [items, *[sec.get("items") or [] for sec in sections]]:
+            for it in collection:
+                if id(it) not in seen_ids:
+                    seen_ids.add(id(it))
+                    bucket.append(it)
+        _enrich_items_metadata(bucket[:60], max_workers=4)
+        _fill_chapter_counts(bucket[:60], max_workers=6)
+        if not sections and items:
+            sections = _build_sections_from_items(items)
+        data = {
+            "items": items,
+            "sections": sections,
+            "total": len(items),
+            "limit": limit,
+            "offset": 0,
+            "sources": ["MangaDex", "MangasBrasuka", "MangaLivre"],
+            "cached": False,
+            "refreshing": False,
+        }
+        catalog_cache = CacheEntry(time.time(), data)
+        _write_catalog_snapshot(data)
+        _prefetch_cover_images(items, limit=48)
+    finally:
+        with catalog_refresh_lock:
+            catalog_refreshing = False
+
+
+def _schedule_catalog_refresh(limit: int = DEFAULT_LIMIT) -> None:
+    global catalog_refreshing
+    with catalog_refresh_lock:
+        if catalog_refreshing:
+            return
+        catalog_refreshing = True
+    thread = threading.Thread(target=_refresh_catalog_cache, args=(limit,), daemon=True)
+    thread.start()
 
 
 def _apply_curated_source_overrides(items: list[dict], query: str) -> list[dict]:
@@ -499,15 +751,16 @@ def _catalog_sections_from_mangadex(limit: int) -> tuple[list[dict], list[dict]]
     trending = reader.trending_mangadex(limit=min(max(limit, 24), 100))
     trending_items: list[dict] = []
     for raw in trending.get("results") or []:
-        item = _normalize_manga_item(raw, section="Em alta")
+        item = _normalize_manga_item(raw, section="Lancamentos recentes")
         if item:
             trending_items.append(item)
-    trending_items = _dedupe(trending_items)[:18]
+    trending_items = _dedupe(trending_items)[:24]
     if trending_items:
-        sections.append({"title": "Em alta", "items": trending_items})
+        sections.append({"title": "Lancamentos recentes", "items": trending_items})
         all_items.extend(trending_items)
 
-    per_genre = max(8, min(18, limit // max(1, len(MANGADEX_GENRES) // 2)))
+    # gêneros mais ricos: minimo 12, ate 18 por seção
+    per_genre = max(12, min(18, limit // 4))
     # Use no language filter so we get covers even for manga not yet translated to pt-br
     catalog = reader.catalog_mangadex(MANGADEX_GENRES, limit_per_genre=per_genre, lang="")
     for section, section_items in (catalog.get("sections") or {}).items():
@@ -525,36 +778,37 @@ def _catalog_sections_from_mangadex(limit: int) -> tuple[list[dict], list[dict]]
     if len(sections) <= 1 and all_items:
         sections = _build_sections_from_items(all_items, per_section=per_genre)
 
+    # Carrossel "Em alta": trending real (AniList+Kitsu) cruzado com o catalogo, no topo
+    highlights = _trending_highlights(all_items, limit=20)
+    if highlights:
+        sections.insert(0, {"title": "Em alta", "items": highlights, "layout": "carousel"})
+
+    # Carrossel "Recém-lançados" por fonte (logo abaixo de Em alta)
+    latest_pos = 1 if highlights else 0
+    for sec in _latest_release_sections():
+        sections.insert(latest_pos, sec)
+        all_items.extend(sec["items"])
+        latest_pos += 1
+
     return _dedupe(all_items), sections
 
 
 def _build_catalog(limit: int) -> dict:
     global catalog_cache
     if _cache_is_fresh(catalog_cache, CATALOG_CACHE_TTL_SECONDS):
-        data = dict(catalog_cache.data)
-        data["items"] = data["items"][:limit]
-        data["limit"] = limit
-        return data
+        return _snapshot_payload(catalog_cache.data, limit)
 
-    items, sections = _catalog_sections_from_mangadex(max(limit, DEFAULT_LIMIT))
-    _enrich_items_from_anilist(items[:10], max_workers=4)
+    snapshot = _read_catalog_snapshot()
+    if snapshot:
+        catalog_cache = CacheEntry(time.time(), snapshot)
+        age = _catalog_snapshot_age()
+        if age is None or age > CATALOG_SNAPSHOT_TTL_SECONDS:
+            _schedule_catalog_refresh(max(limit, DEFAULT_LIMIT))
+            snapshot = {**snapshot, "refreshing": True, "cached": True}
+        return _snapshot_payload(snapshot, limit)
 
-    # Last-resort: if sections still empty but items exist, build sections from item metadata
-    if not sections and items:
-        sections = _build_sections_from_items(items)
-
-    data = {
-        "items": items,
-        "sections": sections,
-        "total": len(items),
-        "limit": limit,
-        "offset": 0,
-        "sources": ["MangaDex", "MangasBrasuka", "MangaLivre"],
-        "cached": False,
-    }
-    catalog_cache = CacheEntry(time.time(), data)
-    data = dict(data)
-    data["items"] = data["items"][:limit]
+    data = _fast_catalog_seed(limit)
+    _schedule_catalog_refresh(max(limit, DEFAULT_LIMIT))
     return data
 
 
@@ -567,6 +821,8 @@ def _search_source(name: str, query: str, limit: int) -> list[dict]:
         payload = reader.search_toomics(query, limit=limit, lang="pt-br")
     elif name == "mangasbrasuka":
         payload = reader.search_mangasbrasuka(query, limit=limit)
+    elif name == "yumo":
+        payload = reader.search_yumo(query, limit=limit)
     else:
         return []
 
@@ -576,6 +832,40 @@ def _search_source(name: str, query: str, limit: int) -> list[dict]:
         if item:
             items.append(item)
     return items
+
+
+def _search_sources_with_timeout(
+    sources: list[str],
+    query: str,
+    limit: int,
+    *,
+    timeout: float = SOURCE_SEARCH_TIMEOUT_SECONDS,
+) -> tuple[list[dict], list[str]]:
+    if not sources:
+        return [], []
+
+    items: list[dict] = []
+    errors: list[str] = []
+    executor = ThreadPoolExecutor(max_workers=len(sources))
+    futures = {
+        executor.submit(_search_source, source, query, limit): source
+        for source in sources
+    }
+    try:
+        done, pending = wait(futures, timeout=timeout)
+        for future in done:
+            source = futures[future]
+            try:
+                items.extend(future.result())
+            except Exception as exc:
+                errors.append(f"{_source_label(source)}: {exc}")
+        for future in pending:
+            source = futures[future]
+            future.cancel()
+            errors.append(f"{_source_label(source)}: timeout")
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    return items, errors
 
 
 def _copy_with_chapter_count(item: dict) -> dict:
@@ -626,8 +916,10 @@ def _resolve_best_source_for_title(title: str, current_source_url: str, lang: st
         return dict(cached.data.get("item") or {})
 
     current = _current_source_item(title, current_source_url)
-    if current:
-        current = _copy_with_chapter_count(current)
+    current_provider = str((current or {}).get("provider") or "").lower()
+    if current and current_provider in PT_COMPLETE_SOURCES:
+        source_resolution_cache[cache_key] = CacheEntry(time.time(), {"item": current})
+        return current
 
     curated_raw = _curated_override_for_title(title)
     if curated_raw:
@@ -639,17 +931,27 @@ def _resolve_best_source_for_title(title: str, current_source_url: str, lang: st
     if not title:
         return current
 
-    candidates: list[dict] = []
-    with ThreadPoolExecutor(max_workers=len(PT_COMPLETE_SOURCES)) as executor:
-        futures = {
-            executor.submit(_search_source, source, title, 5): source
-            for source in PT_COMPLETE_SOURCES
-        }
-        for future in as_completed(futures):
-            try:
-                candidates.extend(future.result())
-            except Exception:
-                continue
+    candidates, _errors = _search_sources_with_timeout(
+        PT_COMPLETE_SOURCES,
+        title,
+        5,
+        timeout=SOURCE_RESOLUTION_TIMEOUT_SECONDS,
+    )
+
+    exact_hits: list[tuple[int, float, dict]] = []
+    for hit in candidates:
+        score = _search_match_score(title, hit)
+        if score < 0.92:
+            continue
+        provider = str(hit.get("provider") or "").lower()
+        source_order = PT_COMPLETE_SOURCES.index(provider) if provider in PT_COMPLETE_SOURCES else len(PT_COMPLETE_SOURCES)
+        exact_hits.append((source_order, score, hit))
+    if exact_hits:
+        exact_hits.sort(key=lambda pair: (pair[0], -pair[1]))
+        candidate = dict(exact_hits[0][2])
+        candidate["relevance"] = round(exact_hits[0][1], 4)
+        source_resolution_cache[cache_key] = CacheEntry(time.time(), {"item": candidate})
+        return candidate
 
     scored_candidates: list[dict] = []
     for item in candidates:
@@ -665,7 +967,7 @@ def _resolve_best_source_for_title(title: str, current_source_url: str, lang: st
 
     all_items = [*scored_candidates]
     if current:
-        all_items.append(current)
+        all_items.append(_copy_with_chapter_count(current))
     if not all_items:
         return None
 
@@ -726,22 +1028,19 @@ def _anilist_metadata(title: str) -> dict:
 def _apply_anilist_metadata(item: dict, metadata: dict) -> None:
     cover = str(metadata.get("poster") or "").strip()
     if cover and not item.get("cover_url"):
-        item["cover_url"] = _proxy_image_url(cover)
         item["cover_original_url"] = cover
-        item["cover_fallbacks"] = [
-            _proxy_image_url(str(url).strip())
-            for url in metadata.get("poster_fallbacks") or []
-            if _proxy_image_url(str(url or "").strip())
-        ]
         item["cover_original_fallbacks"] = [
             str(url).strip()
             for url in metadata.get("poster_fallbacks") or []
             if str(url or "").strip()
         ]
-    if metadata.get("average_score") and not item.get("rating"):
+        item.update(_refresh_cover_fields(item))
+    if metadata.get("average_score") and not _has_rating(item):
         item["rating"] = round(float(metadata["average_score"]) / 10, 1)
     if metadata.get("description") and not item.get("description"):
         item["description"] = metadata["description"]
+    if metadata.get("description"):
+        _add_desc_lang(item, "en", metadata["description"])
     if metadata.get("authors") and not item.get("authors"):
         item["authors"] = metadata["authors"]
     if metadata.get("status") and not item.get("status"):
@@ -749,6 +1048,298 @@ def _apply_anilist_metadata(item: dict, metadata: dict) -> None:
     if metadata.get("genres") and not item.get("genres"):
         item["genres"] = metadata["genres"]
     item["anilist_url"] = metadata.get("url") or item.get("anilist_url") or ""
+
+
+def _has_rating(item: dict) -> bool:
+    try:
+        return float(item.get("rating")) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _kitsu_metadata(title: str) -> dict:
+    key = normalize_match_text(title)
+    cached = kitsu_cache.get(key)
+    if _cache_is_fresh(cached, KITSU_CACHE_TTL_SECONDS):
+        return dict(cached.data)
+    data: dict = {}
+    try:
+        response = requests.get(
+            "https://kitsu.app/api/edge/manga",
+            params={"filter[text]": title, "page[limit]": 1},
+            headers={"Accept": "application/vnd.api+json", "User-Agent": "Mozilla/5.0"},
+            timeout=8,
+        )
+        response.raise_for_status()
+        entries = response.json().get("data") or []
+        if entries:
+            attrs = entries[0].get("attributes") or {}
+            poster = attrs.get("posterImage") or {}
+            avg = attrs.get("averageRating")
+            try:
+                rating = round(float(avg) / 10, 1) if avg else None  # kitsu 0-100 -> 0-10
+            except (TypeError, ValueError):
+                rating = None
+            data = {
+                "rating": rating,
+                "description": str(attrs.get("synopsis") or attrs.get("description") or "").strip(),
+                "poster": str(
+                    poster.get("large") or poster.get("medium") or poster.get("original") or ""
+                ).strip(),
+                "poster_fallbacks": [
+                    str(url).strip()
+                    for url in [poster.get("medium"), poster.get("small"), poster.get("original")]
+                    if str(url or "").strip()
+                ],
+                "url": f"https://kitsu.app/manga/{entries[0].get('id')}" if entries[0].get("id") else "",
+            }
+    except Exception:
+        data = {}
+    kitsu_cache[key] = CacheEntry(time.time(), data)
+    return dict(data)
+
+
+def _apply_kitsu_metadata(item: dict, metadata: dict) -> None:
+    cover = str(metadata.get("poster") or "").strip()
+    if cover and not item.get("cover_url"):
+        item["cover_original_url"] = cover
+        item["cover_original_fallbacks"] = [
+            str(url).strip()
+            for url in metadata.get("poster_fallbacks") or []
+            if str(url or "").strip()
+        ]
+        item.update(_refresh_cover_fields(item))
+    rating = metadata.get("rating")
+    if rating and not _has_rating(item):
+        item["rating"] = rating
+    if metadata.get("description") and not item.get("description"):
+        item["description"] = metadata["description"]
+    if metadata.get("description"):
+        _add_desc_lang(item, "en", metadata["description"])
+    item["kitsu_url"] = metadata.get("url") or item.get("kitsu_url") or ""
+
+
+def _kitsu_trending_raw(limit: int = 20) -> list[dict]:
+    """Trending manga 'da semana' direto do Kitsu, com poster/rating/sinopse."""
+    try:
+        response = requests.get(
+            "https://kitsu.app/api/edge/trending/manga",
+            params={"page[limit]": min(max(limit, 1), 20)},
+            headers={"Accept": "application/vnd.api+json", "User-Agent": "Mozilla/5.0"},
+            timeout=8,
+        )
+        response.raise_for_status()
+        entries = response.json().get("data") or []
+    except Exception:
+        return []
+    out: list[dict] = []
+    for entry in entries:
+        attrs = entry.get("attributes") or {}
+        title = str(attrs.get("canonicalTitle") or "").strip()
+        if not title:
+            continue
+        poster = attrs.get("posterImage") or {}
+        avg = attrs.get("averageRating")
+        try:
+            rating = round(float(avg) / 10, 1) if avg else None
+        except (TypeError, ValueError):
+            rating = None
+        aliases = [str(v).strip() for v in (attrs.get("titles") or {}).values() if str(v or "").strip()]
+        out.append(
+            {
+                "title": title,
+                "aliases": aliases,
+                "meta": {
+                    "poster": str(
+                        poster.get("large") or poster.get("medium") or poster.get("original") or ""
+                    ).strip(),
+                    "poster_fallbacks": [
+                        str(u).strip()
+                        for u in [poster.get("medium"), poster.get("small"), poster.get("original")]
+                        if str(u or "").strip()
+                    ],
+                    "rating": rating,
+                    "description": str(attrs.get("synopsis") or attrs.get("description") or "").strip(),
+                    "url": f"https://kitsu.app/manga/{entry.get('id')}" if entry.get("id") else "",
+                },
+            }
+        )
+    return out
+
+
+def _kitsu_trending_items(limit: int = 20) -> list[dict]:
+    """Resolve cada trending do Kitsu a uma fonte legivel (MangaDex), mantendo a ordem do Kitsu."""
+    raw = _kitsu_trending_raw(limit)
+    if not raw:
+        return []
+
+    def resolve(entry: dict) -> dict | None:
+        names = [entry["title"], *entry["aliases"][:3]]
+        best: dict | None = None
+        best_score = 0.0
+        for name in names:
+            try:
+                payload = reader.search_mangadex(name, limit=5)
+            except Exception:
+                continue
+            for raw_item in payload.get("results") or []:
+                cand = _normalize_manga_item(raw_item, section="Em alta")
+                if not cand:
+                    continue
+                score = max(
+                    fuzzy_match_score(n, str(cand.get("title") or ""))
+                    for n in names
+                )
+                if score > best_score:
+                    best_score, best = score, cand
+            if best_score >= 0.92:
+                break
+        if not best or best_score < 0.6:
+            return None
+        _apply_kitsu_metadata(best, entry["meta"])
+        if entry["meta"].get("rating") and not best.get("rating"):
+            best["rating"] = entry["meta"]["rating"]
+        return best
+
+    out: list[dict] = []
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        for it in executor.map(resolve, raw):
+            if it:
+                out.append(it)
+    return _dedupe(out)[:limit]
+
+
+def _kitsu_trending_titles(limit: int = 40) -> list[str]:
+    titles: list[str] = []
+    for entry in _kitsu_trending_raw(limit):
+        titles.append(entry["title"])
+        titles.extend(entry["aliases"])
+    return titles
+
+
+def _latest_release_sections() -> list[dict]:
+    """Carrossel 'Recém-lançados' por fonte. Hoje: MangaDex (feed real de ultimo cap)."""
+    sections: list[dict] = []
+    try:
+        payload = reader.latest_mangadex(limit=24, lang="")
+    except Exception:
+        payload = {}
+    items: list[dict] = []
+    for raw in payload.get("results") or []:
+        item = _normalize_manga_item(raw, section="Recem-lancados")
+        if item:
+            items.append(item)
+    items = _dedupe(items)[:20]
+    if items:
+        sections.append(
+            {"title": "Recém-lançados · MangaDex", "items": items, "layout": "carousel"}
+        )
+    # mangasbrasuka / mangalivre: sem scraper de feed de lancamentos ainda (so busca).
+    return sections
+
+
+def _trending_highlights(catalog_items: list[dict], limit: int = 20) -> list[dict]:
+    """Carrossel 'Em alta da semana': trending real do Kitsu resolvido a fontes legiveis.
+    Kitsu primeiro (ordem do Kitsu), completa com AniList x catalogo. Nunca usa curated."""
+    picked: list[dict] = []
+    seen: set[str] = set()
+
+    def add(item: dict) -> None:
+        key = str(item.get("id") or item.get("source_url") or item.get("title"))
+        if key and key not in seen:
+            seen.add(key)
+            picked.append(item)
+
+    # 1) Kitsu trending da semana (fonte de verdade do carrossel)
+    for item in _kitsu_trending_items(limit):
+        add(item)
+
+    # 2) completa com AniList trending cruzado com o catalogo ja carregado
+    if len(picked) < limit:
+        titles: list[str] = []
+        try:
+            titles += reader.anilist_trending_titles(40)
+        except Exception:
+            pass
+        index: dict[str, dict] = {}
+        for item in catalog_items:
+            for name in [item.get("title"), *(item.get("alternative_titles") or [])]:
+                norm = normalize_match_text(str(name or ""))
+                if norm:
+                    index.setdefault(norm, item)
+        for title in titles:
+            item = index.get(normalize_match_text(title))
+            if item:
+                add(item)
+            if len(picked) >= limit:
+                break
+
+    # 3) fallback final: itens do catalogo COM capa, EXCETO curated ("Destaques")
+    if len(picked) < 8:
+        for item in catalog_items:
+            if str(item.get("section") or "") == "Destaques":
+                continue
+            if not item.get("cover_url"):
+                continue
+            add(item)
+            if len(picked) >= 12:
+                break
+
+    return picked[:limit]
+
+
+def _fill_chapter_counts(items: list[dict], max_workers: int = 6, cap: int = 60) -> None:
+    """Conta capitulos (barato, mangadex /aggregate) p/ mostrar 'X caps' no card."""
+    targets = [
+        item for item in items
+        if _guess_provider(item) == "mangadex"
+        and int(item.get("chapter_count") or 0) <= 0
+        and str(item.get("source_url") or "")
+    ][:cap]
+    if not targets:
+        return
+
+    def fill(item: dict) -> None:
+        try:
+            count = reader.mangadex_chapter_total(str(item.get("source_url") or ""))
+            if count:
+                item["chapter_count"] = count
+        except Exception:
+            pass
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        list(executor.map(fill, targets))
+
+
+def _enrich_items_metadata(items: list[dict], max_workers: int = 6) -> None:
+    """Preenche rating/autor/sinopse/capa: AniList primario, Kitsu fallback."""
+    candidates = [
+        item for item in items
+        if item.get("title")
+        and (
+            not _has_rating(item)
+            or not item.get("authors")
+            or not item.get("description")
+            or not item.get("cover_url")
+        )
+    ]
+    if not candidates:
+        return
+
+    def enrich(item: dict) -> None:
+        title = str(item.get("title") or "")
+        try:
+            _apply_anilist_metadata(item, _anilist_metadata(title))
+        except Exception:
+            pass
+        if not _has_rating(item) or not item.get("description") or not item.get("cover_url"):
+            try:
+                _apply_kitsu_metadata(item, _kitsu_metadata(title))
+            except Exception:
+                pass
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        list(executor.map(enrich, candidates))
 
 
 def _enrich_items_from_anilist(items: list[dict], max_workers: int = 4) -> None:
@@ -779,6 +1370,143 @@ def _enrich_items_from_anilist(items: list[dict], max_workers: int = 4) -> None:
 
 def _fill_missing_cover_from_anilist(items: list[dict], limit: int = 4) -> None:
     _enrich_items_from_anilist(items[:limit], max_workers=4)
+
+
+_PT_HINTS = (
+    "ção", "ã", "õ", "á", "ç", "í", "ú", "ê", "ô",
+    " não ", " que ", " uma ", " com ", " para ", " é ", " dos ", " das ",
+    " ele ", " ela ", " você ", " mais ", " seu ", " sua ", " mas ", " são ",
+)
+_EN_HINTS = (
+    " the ", " and ", " of ", " is ", " to ", " his ", " her ", " with ",
+    " was ", " that ", " they ", " when ", " who ", " from ", " after ",
+)
+
+
+def _looks_english(text: str) -> bool:
+    """Heuristica barata: provavelmente ingles (sem tracos PT, com stopwords EN)."""
+    t = f" {str(text or '').lower()} "
+    if len(t) < 12:
+        return False
+    if any(hint in t for hint in _PT_HINTS):
+        return False
+    return any(hint in t for hint in _EN_HINTS)
+
+
+def _looks_portuguese(text: str) -> bool:
+    t = f" {str(text or '').lower()} "
+    return any(hint in t for hint in _PT_HINTS)
+
+
+def _translate_to_pt(text: str) -> str:
+    """Traduz QUALQUER idioma -> PT (sl=auto). Ja-PT ou falha -> texto original."""
+    original = str(text or "").strip()
+    if not original or _looks_portuguese(original):
+        return original
+    cached = translation_cache.get(original)
+    if _cache_is_fresh(cached, TRANSLATION_CACHE_TTL_SECONDS):
+        return str(cached.data.get("text") or original)
+    translated = original
+    try:
+        response = requests.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={"client": "gtx", "sl": "auto", "tl": "pt", "dt": "t", "q": original},
+            timeout=6,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        response.raise_for_status()
+        segments = response.json()[0] or []
+        joined = "".join(seg[0] for seg in segments if seg and seg[0]).strip()
+        translated = joined or original
+    except Exception:
+        translated = original
+    translation_cache[original] = CacheEntry(time.time(), {"text": translated})
+    return translated
+
+
+def _add_desc_lang(item: dict, lang: str, text: str) -> None:
+    text = str(text or "").strip()
+    if not text:
+        return
+    item.setdefault("descriptions_map", {}).setdefault(lang, text)
+
+
+def _finalize_descriptions(item: dict) -> None:
+    """Lista ordenada de sinopses (PT topo -> EN -> resto) + define description default."""
+    raw = item.get("descriptions_map") or {}
+    norm: dict[str, str] = {}
+    for lang, text in raw.items():
+        text = str(text or "").strip()
+        if text:
+            norm[str(lang or "").lower()] = text
+    # sem map, mas tem description solta -> classifica por idioma
+    if not norm and str(item.get("description") or "").strip():
+        d = str(item["description"]).strip()
+        norm["pt-br" if _looks_portuguese(d) else "en"] = d
+
+    pt = norm.get("pt-br") or norm.get("pt")
+    en = norm.get("en")
+    rest = sorted(k for k in norm if k not in ("pt-br", "pt", "en"))
+
+    ordered: list[dict] = []
+    if pt:
+        ordered.append({"lang": "pt-br", "text": pt})
+    elif en:
+        ordered.append({"lang": "pt-br", "text": _translate_to_pt(en), "auto": True})
+    elif rest:
+        ordered.append({"lang": "pt-br", "text": _translate_to_pt(norm[rest[0]]), "auto": True})
+    if en:
+        ordered.append({"lang": "en", "text": en})
+    for k in rest:
+        ordered.append({"lang": k, "text": norm[k]})
+
+    item.pop("descriptions_map", None)
+    if ordered:
+        item["descriptions"] = ordered
+        item["description"] = ordered[0]["text"]
+
+
+def _strip_descriptions_map(item: dict) -> None:
+    raw = item.pop("descriptions_map", None)
+    if item.get("descriptions"):
+        return
+    if raw:
+        ordered = []
+        for lang, text in raw.items():
+            text = str(text or "").strip()
+            if text:
+                ordered.append({"lang": str(lang or "").lower(), "text": text})
+        if ordered:
+            item["descriptions"] = ordered
+    elif item.get("description"):
+        d = str(item["description"])
+        item["descriptions"] = [
+            {"lang": "pt-br" if _looks_portuguese(d) else "en", "text": d}
+        ]
+
+
+def _finalize_payload_descriptions(data: dict, max_workers: int = 6, cap: int = 200) -> None:
+    seen: set[int] = set()
+    bucket: list[dict] = []
+
+    def collect(item: dict) -> None:
+        if not isinstance(item, dict) or id(item) in seen:
+            return
+        seen.add(id(item))
+        bucket.append(item)
+
+    for item in data.get("items") or []:
+        collect(item)
+    for section in data.get("sections") or []:
+        for item in section.get("items") or []:
+            collect(item)
+    if not bucket:
+        return
+    head = bucket[:cap]
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        list(executor.map(_finalize_descriptions, head))
+    for item in bucket[cap:]:  # tail: sem traduzir, so normaliza/limpa
+        _strip_descriptions_map(item)
 
 
 def _image_referer(url: str) -> str:
@@ -828,14 +1556,23 @@ def _fetch_image(url: str) -> ImageCacheEntry:
     if cached and time.time() - cached.saved_at < IMAGE_CACHE_TTL_SECONDS:
         return cached
 
+    headers = {
+        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/138.0.0.0 Safari/537.36"
+        ),
+        "Referer": _image_referer(url),
+    }
+    if _is_mangadex_image_url(url):
+        headers["Accept"] = "*/*"
+        headers["User-Agent"] = "python-requests/2.32.5"
+
     response = requests.get(
         url,
         timeout=20,
-        headers={
-            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-            "User-Agent": "Mozilla/5.0",
-            "Referer": _image_referer(url),
-        },
+        headers=headers,
     )
     response.raise_for_status()
     media_type = response.headers.get("content-type", "image/jpeg").split(";")[0].strip()
@@ -886,22 +1623,14 @@ def _search_mangas(query: str, limit: int) -> dict:
         return {**cached.data, "cached": True}
 
     sources = SEARCH_SOURCES
-    items: list[dict] = []
-    errors: list[str] = []
-    with ThreadPoolExecutor(max_workers=len(sources)) as executor:
-        futures = {
-            executor.submit(_search_source, source, query, limit): source
-            for source in sources
-        }
-        for future in as_completed(futures):
-            source = futures[future]
-            try:
-                items.extend(future.result())
-            except Exception as exc:
-                errors.append(f"{_source_label(source)}: {exc}")
+    items, errors = _search_sources_with_timeout(
+        sources,
+        query,
+        limit,
+        timeout=SOURCE_SEARCH_TIMEOUT_SECONDS,
+    )
 
     normalized_query = normalize_match_text(query)
-    items = _resolve_best_sources(items)
     items = _dedupe(items)
     items = _apply_curated_source_overrides(items, query)
     items = _dedupe(items)
@@ -926,7 +1655,7 @@ def _search_mangas(query: str, limit: int) -> dict:
             item["title"].lower(),
         )
     )
-    _fill_missing_cover_from_anilist(items[:limit])
+    _enrich_items_metadata(items[:limit], max_workers=6)
     data = {
         "items": items[:limit],
         "sections": [{"title": "Resultados", "items": items[:limit]}],
@@ -981,12 +1710,7 @@ def list_mangas(
         ]
         sections = [section for section in sections if section["items"]]
     paged = items[offset : offset + limit]
-    prefetch_candidates = []
-    for section in sections:
-        prefetch_candidates.extend((section.get("items") or [])[:8])
-    prefetch_candidates.extend(paged[:24])
-    background_tasks.add_task(_prefetch_cover_images, _dedupe(prefetch_candidates), 64)
-    return {
+    result = {
         **data,
         "items": paged,
         "sections": sections,
@@ -994,6 +1718,8 @@ def list_mangas(
         "limit": limit,
         "offset": offset,
     }
+    _finalize_payload_descriptions(result)
+    return result
 
 
 @app.get("/api/chapters")
@@ -1008,18 +1734,31 @@ def list_chapters(
     if not source:
         raise HTTPException(status_code=400, detail="source_url vazio.")
     resolved_item = None
-    if auto_source and title.strip():
+    requested_lang = (lang or "").strip().lower()
+    # Auto-troca pra fonte PT-completa SÓ quando o usuario quer pt-br.
+    # Pra EN/JP/etc, mantem a fonte (MangaDex) e puxa capitulos naquele idioma.
+    if auto_source and title.strip() and requested_lang in ("", "pt-br", "pt"):
         resolved_item = _resolve_best_source_for_title(title, source, lang)
         resolved_url = str((resolved_item or {}).get("source_url") or "").strip()
         if resolved_url:
             source = resolved_url
-    try:
-        payload = reader.list_chapters(source, lang=lang)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    cache_key = f"{source}|{normalize_match_text(lang)}"
+    cached = chapters_cache.get(cache_key)
+    if _cache_is_fresh(cached, CHAPTERS_CACHE_TTL_SECONDS):
+        payload = dict(cached.data)
+        payload["cached"] = True
+    else:
+        try:
+            payload = reader.list_chapters(source, lang=lang)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        chapters_cache[cache_key] = CacheEntry(time.time(), dict(payload))
+        payload["cached"] = False
     payload["requested_source_url"] = requested_source
     payload["resolved_source_url"] = source
     if resolved_item:
+        _finalize_descriptions(resolved_item)
         payload["resolved_manga"] = resolved_item
         payload["resolved_source"] = _source_label(payload.get("provider") or resolved_item.get("provider"))
     return payload
@@ -1084,7 +1823,7 @@ def proxy_image(url: str = Query(..., description="URL remota da imagem.")) -> R
         content=image.content,
         media_type=image.media_type,
         headers={
-            "Cache-Control": "no-store",
+            "Cache-Control": "public, max-age=86400",
             "X-MangaTemp-Image-Cache": "memory",
         },
     )

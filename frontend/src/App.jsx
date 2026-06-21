@@ -13,6 +13,15 @@ function resolveApiUrl(url) {
   return url.startsWith("/") ? `${API_BASE_URL}${url}` : url
 }
 
+const LANG_LABEL = {
+  "pt-br": "PT", pt: "PT", en: "EN", es: "ES", "es-la": "ES", ja: "JP",
+  ko: "KR", zh: "ZH", "zh-hk": "ZH", fr: "FR", de: "DE", it: "IT", ru: "RU",
+  id: "ID", th: "TH", vi: "VI", pl: "PL", tr: "TR", ar: "AR", uk: "UK",
+}
+function langLabel(lang) {
+  return LANG_LABEL[lang] ?? String(lang || "").toUpperCase().slice(0, 2)
+}
+
 function useElementSize() {
   const ref = useRef(null)
   const [size, setSize] = useState({ width: 0, height: 0 })
@@ -34,15 +43,20 @@ function Header({ query, onQueryChange, total }) {
   return (
     <header className="sticky top-0 z-10 border-b border-line bg-app/95 px-5 py-4 backdrop-blur">
       <div className="mx-auto flex max-w-7xl items-center gap-4">
-        <div className="min-w-36">
-          <h1 className="text-lg font-black tracking-wide text-zinc-50">MangaTemp</h1>
-          <p className="text-xs text-muted">{total} obras no catalogo</p>
+        <div className="flex min-w-36 items-center gap-2.5">
+          <span className="grid h-9 w-9 place-items-center rounded-md bg-accent text-base font-black text-app">
+            M
+          </span>
+          <div>
+            <h1 className="text-lg font-black tracking-wide text-zinc-50">MangaTemp</h1>
+            <p className="text-xs text-muted">{total} obras no catalogo</p>
+          </div>
         </div>
         <input
           value={query}
           onChange={(event) => onQueryChange(event.target.value)}
           placeholder="Buscar manga, manhwa ou novel"
-          className="h-10 flex-1 rounded-md border border-line bg-panel px-3 text-sm text-zinc-100 outline-none transition focus:border-zinc-500"
+          className="h-10 flex-1 rounded-md border border-line bg-panel px-3 text-sm text-zinc-100 outline-none transition focus:border-accent/70 focus:ring-1 focus:ring-accent/30"
         />
       </div>
     </header>
@@ -107,9 +121,12 @@ function MangaSection({ title, items, sectionIndex, onSelect }) {
   return (
     <section className="px-5 py-5">
       <div className="mb-3 flex items-end justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-black text-zinc-50">{title}</h2>
-          <p className="text-xs text-muted">{items.length} obras</p>
+        <div className="flex items-center gap-3">
+          <span className="h-6 w-1 rounded-full bg-accent" />
+          <div>
+            <h2 className="text-xl font-black text-zinc-50">{title}</h2>
+            <p className="text-xs text-muted">{items.length} obras</p>
+          </div>
         </div>
       </div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7">
@@ -120,6 +137,161 @@ function MangaSection({ title, items, sectionIndex, onSelect }) {
             priority={sectionIndex === 0 && index < 14}
             onSelect={onSelect}
           />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function HeroCarousel({ items, onSelect }) {
+  const list = (items ?? []).slice(0, 8)
+  const [idx, setIdx] = useState(0)
+  useEffect(() => {
+    setIdx(0)
+  }, [items])
+  useEffect(() => {
+    if (list.length <= 1) return undefined
+    const t = setInterval(() => setIdx((i) => (i + 1) % list.length), 6000)
+    return () => clearInterval(t)
+  }, [list.length])
+  if (!list.length) return null
+  const manga = list[idx]
+  const cover = resolveApiUrl(manga.cover_url)
+  const go = (d) => setIdx((i) => (i + d + list.length) % list.length)
+  return (
+    <section className="relative mx-5 mt-5 overflow-hidden rounded-xl border border-line bg-panel">
+      {cover && (
+        <img
+          src={cover}
+          alt=""
+          aria-hidden="true"
+          className="absolute inset-0 h-full w-full scale-110 object-cover opacity-30 blur-2xl"
+        />
+      )}
+      <div className="absolute inset-0 bg-gradient-to-r from-app via-app/90 to-app/40" />
+      <div className="relative flex items-center gap-6 p-6 md:p-8">
+        {cover && (
+          <img
+            src={cover}
+            alt={`Capa de ${manga.title}`}
+            className="hidden h-56 w-40 shrink-0 rounded-lg object-cover shadow-glow sm:block"
+            loading="eager"
+            decoding="async"
+          />
+        )}
+        <div className="min-w-0">
+          <span className="text-xs font-semibold uppercase tracking-widest text-accent-dim">
+            Em alta
+          </span>
+          <h2 className="mt-1 line-clamp-2 text-2xl font-black text-zinc-50 md:text-3xl">
+            {manga.title}
+          </h2>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {manga.genres?.slice(0, 4).map((genre) => (
+              <span
+                key={genre}
+                className="rounded-full border border-line bg-soft/70 px-2.5 py-0.5 text-xs text-muted"
+              >
+                {genre}
+              </span>
+            ))}
+          </div>
+          {manga.description && (
+            <p className="mt-3 line-clamp-3 max-w-2xl text-sm text-muted">{manga.description}</p>
+          )}
+          <button
+            type="button"
+            onClick={() => onSelect?.(manga)}
+            className="mt-4 rounded-md bg-accent px-5 py-2 text-sm font-bold text-app transition hover:bg-white"
+          >
+            Abrir
+          </button>
+        </div>
+      </div>
+      {list.length > 1 && (
+        <>
+          <button
+            type="button"
+            onClick={() => go(-1)}
+            aria-label="Anterior"
+            className="absolute left-3 top-1/2 grid h-9 w-9 -translate-y-1/2 place-items-center rounded-full border border-line bg-app/70 text-zinc-100 backdrop-blur transition hover:border-accent hover:text-accent"
+          >
+            ‹
+          </button>
+          <button
+            type="button"
+            onClick={() => go(1)}
+            aria-label="Proximo"
+            className="absolute right-3 top-1/2 grid h-9 w-9 -translate-y-1/2 place-items-center rounded-full border border-line bg-app/70 text-zinc-100 backdrop-blur transition hover:border-accent hover:text-accent"
+          >
+            ›
+          </button>
+          <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 gap-1.5">
+            {list.map((_, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => setIdx(i)}
+                aria-label={`Slide ${i + 1}`}
+                className={`h-1.5 rounded-full transition-all ${
+                  i === idx ? "w-5 bg-accent" : "w-1.5 bg-line hover:bg-zinc-500"
+                }`}
+              />
+            ))}
+          </div>
+        </>
+      )}
+    </section>
+  )
+}
+
+function MangaCarousel({ title, items, onSelect }) {
+  const scrollRef = useRef(null)
+  if (!items?.length) return null
+  const scrollBy = (dir) => {
+    const el = scrollRef.current
+    if (el) el.scrollBy({ left: dir * el.clientWidth * 0.85, behavior: "smooth" })
+  }
+  return (
+    <section className="py-5 pl-5">
+      <div className="mb-3 flex items-center justify-between gap-3 pr-5">
+        <div className="flex items-center gap-3">
+          <span className="h-6 w-1 rounded-full bg-accent" />
+          <div>
+            <h2 className="text-xl font-black text-zinc-50">{title}</h2>
+            <p className="text-xs text-muted">{items.length} obras em destaque</p>
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => scrollBy(-1)}
+            aria-label="Anterior"
+            className="grid h-8 w-8 place-items-center rounded-full border border-line bg-soft text-zinc-200 transition hover:border-accent hover:text-accent"
+          >
+            ‹
+          </button>
+          <button
+            type="button"
+            onClick={() => scrollBy(1)}
+            aria-label="Proximo"
+            className="grid h-8 w-8 place-items-center rounded-full border border-line bg-soft text-zinc-200 transition hover:border-accent hover:text-accent"
+          >
+            ›
+          </button>
+        </div>
+      </div>
+      <div
+        ref={scrollRef}
+        className="no-scrollbar flex snap-x snap-mandatory gap-3 overflow-x-auto scroll-smooth pb-1 pr-5"
+      >
+        {items.map((manga, index) => (
+          <div
+            key={`hot-${manga.source_url ?? manga.id ?? manga.title}-${index}`}
+            className="w-[184px] shrink-0 snap-start"
+          >
+            <MangaCard manga={manga} priority={index < 6} onSelect={onSelect} />
+          </div>
         ))}
       </div>
     </section>
@@ -142,6 +314,29 @@ function SectionedCatalog({ sections, items, onSelect }) {
     }
     return Array.from(grouped.entries()).map(([title, secItems]) => ({ title, items: secItems }))
   }, [sections, items])
+
+  // lazy home: renderiza poucas secoes, carrega mais conforme rola
+  const [shown, setShown] = useState(3)
+  const sentinelRef = useRef(null)
+  useEffect(() => {
+    setShown(3)
+  }, [visibleSections])
+  useEffect(() => {
+    if (shown >= visibleSections.length) return undefined
+    const el = sentinelRef.current
+    if (!el) return undefined
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          setShown((value) => Math.min(value + 2, visibleSections.length))
+        }
+      },
+      { rootMargin: "800px" },
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [shown, visibleSections])
+
   if (!visibleSections.length) {
     return (
       <main className="px-5 py-8 text-sm text-muted">
@@ -152,15 +347,29 @@ function SectionedCatalog({ sections, items, onSelect }) {
 
   return (
     <main className="pb-8">
-      {visibleSections.map((section, index) => (
-        <MangaSection
-          key={section.title}
-          title={section.title}
-          items={section.items}
-          sectionIndex={index}
-          onSelect={onSelect}
-        />
-      ))}
+      {visibleSections.slice(0, shown).map((section, index) =>
+        section.layout === "carousel" ? (
+          <MangaCarousel
+            key={section.title}
+            title={section.title}
+            items={section.items}
+            onSelect={onSelect}
+          />
+        ) : (
+          <MangaSection
+            key={section.title}
+            title={section.title}
+            items={section.items}
+            sectionIndex={index}
+            onSelect={onSelect}
+          />
+        ),
+      )}
+      {shown < visibleSections.length && (
+        <div ref={sentinelRef} className="flex justify-center py-8 text-xs text-muted">
+          Carregando mais...
+        </div>
+      )}
     </main>
   )
 }
@@ -185,6 +394,31 @@ function MangaDetailPanel({ manga, onClose }) {
   const [loadingChapter, setLoadingChapter] = useState(false)
   const [openChapterError, setOpenChapterError] = useState("")
 
+  const descriptions = Array.isArray(manga?.descriptions) && manga.descriptions.length
+    ? manga.descriptions
+    : (manga?.description ? [{ lang: "pt-br", text: manga.description }] : [])
+  const [descLang, setDescLang] = useState(descriptions[0]?.lang ?? "pt-br")
+  useEffect(() => {
+    setDescLang(descriptions[0]?.lang ?? "pt-br")
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [manga?.id])
+  const activeDesc = descriptions.find((d) => d.lang === descLang) ?? descriptions[0]
+
+  const chapterLangs = useMemo(() => {
+    const raw = (manga?.chapter_languages ?? []).map((l) => String(l).toLowerCase())
+    const uniq = [...new Set(raw)]
+    const pt = uniq.filter((l) => l === "pt-br" || l === "pt")
+    const en = uniq.filter((l) => l === "en")
+    const rest = uniq.filter((l) => !["pt-br", "pt", "en"].includes(l)).sort()
+    const ordered = [...pt, ...en, ...rest]
+    return ordered.length ? ordered : ["pt-br"]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [manga?.id])
+  const [chapterLang, setChapterLang] = useState(chapterLangs[0])
+  useEffect(() => {
+    setChapterLang(chapterLangs[0])
+  }, [chapterLangs])
+
   useEffect(() => {
     if (!manga?.source_url) return undefined
     const controller = new AbortController()
@@ -202,7 +436,7 @@ function MangaDetailPanel({ manga, onClose }) {
         const params = new URLSearchParams({
           source_url: manga.source_url,
           title: manga.title ?? "",
-          lang: "pt-br",
+          lang: chapterLang,
         })
         const response = await fetch(`${API_BASE_URL}/api/chapters?${params}`, {
           signal: controller.signal,
@@ -227,7 +461,7 @@ function MangaDetailPanel({ manga, onClose }) {
 
     load()
     return () => controller.abort()
-  }, [manga])
+  }, [manga, chapterLang])
 
   if (!manga) return null
   const sourceLabel = resolvedSource || manga.source
@@ -248,7 +482,7 @@ function MangaDetailPanel({ manga, onClose }) {
     try {
       const params = new URLSearchParams({
         source_url: chapter.url,
-        lang: "pt-br",
+        lang: chapterLang,
       })
       const response = await fetch(`${API_BASE_URL}/api/chapter?${params}`, {
         headers: { Accept: "application/json" },
@@ -307,9 +541,30 @@ function MangaDetailPanel({ manga, onClose }) {
                   </span>
                 ))}
               </div>
-              <p className="text-muted">
-                {manga.description || "Sem sinopse disponivel nessa fonte."}
-              </p>
+              <div>
+                {descriptions.length > 1 && (
+                  <div className="mb-2 flex flex-wrap gap-1.5">
+                    {descriptions.map((d) => (
+                      <button
+                        key={d.lang}
+                        type="button"
+                        onClick={() => setDescLang(d.lang)}
+                        title={d.auto ? "Traduzido automaticamente" : ""}
+                        className={`rounded px-2 py-0.5 text-[11px] font-semibold transition ${
+                          d.lang === descLang
+                            ? "bg-accent text-app"
+                            : "border border-line bg-soft text-muted hover:border-zinc-500"
+                        }`}
+                      >
+                        {langLabel(d.lang)}{d.auto ? "*" : ""}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <p className="text-muted">
+                  {activeDesc?.text || "Sem sinopse disponivel nessa fonte."}
+                </p>
+              </div>
               {manga.authors?.length > 0 && (
                 <p className="text-xs text-zinc-500">
                   Autores: {manga.authors.slice(0, 4).join(", ")}
@@ -319,7 +574,28 @@ function MangaDetailPanel({ manga, onClose }) {
           </div>
 
           <div className="mt-6">
-            <h3 className="text-base font-bold text-zinc-100">Capitulos</h3>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-base font-bold text-zinc-100">Capitulos</h3>
+              {chapterLangs.length > 1 && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-xs text-muted">Idioma:</span>
+                  {chapterLangs.map((l) => (
+                    <button
+                      key={l}
+                      type="button"
+                      onClick={() => setChapterLang(l)}
+                      className={`rounded px-2 py-0.5 text-[11px] font-semibold transition ${
+                        l === chapterLang
+                          ? "bg-accent text-app"
+                          : "border border-line bg-soft text-muted hover:border-zinc-500"
+                      }`}
+                    >
+                      {langLabel(l)}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             {loadingChapters && <p className="mt-3 text-sm text-muted">Carregando capitulos...</p>}
             {chapterError && <p className="mt-3 text-sm text-red-300">{chapterError}</p>}
             {openChapterError && <p className="mt-3 text-sm text-red-300">{openChapterError}</p>}
@@ -404,15 +680,18 @@ export default function App() {
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
+  const [refreshTick, setRefreshTick] = useState(0)
 
   useEffect(() => {
     const controller = new AbortController()
+    let retryId = null
     const timeout = setTimeout(async () => {
       setLoading(true)
       setError("")
       try {
-        const params = new URLSearchParams({ limit: "200" })
-        if (query.trim()) params.set("q", query.trim())
+        const trimmedQuery = query.trim()
+        const params = new URLSearchParams({ limit: trimmedQuery ? "40" : "80" })
+        if (trimmedQuery) params.set("q", trimmedQuery)
         const response = await fetch(`${API_BASE_URL}/api/mangas?${params}`, {
           signal: controller.signal,
           headers: { Accept: "application/json" },
@@ -422,6 +701,11 @@ export default function App() {
         setMangas(payload.items ?? [])
         setSections(payload.sections ?? [])
         setTotal(payload.total ?? payload.items?.length ?? 0)
+        if (!trimmedQuery && payload.refreshing) {
+          retryId = window.setTimeout(() => {
+            setRefreshTick((value) => value + 1)
+          }, 2500)
+        }
       } catch (err) {
         if (err.name !== "AbortError") {
           setError("Nao consegui carregar o catalogo.")
@@ -433,9 +717,18 @@ export default function App() {
 
     return () => {
       clearTimeout(timeout)
+      if (retryId) clearTimeout(retryId)
       controller.abort()
     }
-  }, [query])
+  }, [query, refreshTick])
+
+  const heroSection = (sections ?? []).find(
+    (s) => s.layout === "carousel" && s.title === "Em alta",
+  )
+  const heroItems = heroSection?.items?.length ? heroSection.items : mangas.slice(0, 8)
+  const catalogSections = (sections ?? []).filter(
+    (s) => !(s.layout === "carousel" && s.title === "Em alta"),
+  )
 
   return (
     <div className="min-h-screen bg-app text-zinc-100">
@@ -450,7 +743,10 @@ export default function App() {
       ) : query.trim() ? (
         <VirtualMangaGrid mangas={mangas} onSelect={setSelectedManga} />
       ) : (
-        <SectionedCatalog sections={sections} items={mangas} onSelect={setSelectedManga} />
+        <>
+          <HeroCarousel items={heroItems} onSelect={setSelectedManga} />
+          <SectionedCatalog sections={catalogSections} items={mangas} onSelect={setSelectedManga} />
+        </>
       )}
       <MangaDetailPanel manga={selectedManga} onClose={() => setSelectedManga(null)} />
     </div>
