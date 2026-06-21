@@ -156,7 +156,7 @@ function HeroCarousel({ items, onSelect }) {
   }, [list.length])
   if (!list.length) return null
   const manga = list[idx]
-  const cover = resolveApiUrl(manga.cover_url)
+  const cover = resolveApiUrl(manga.cover_path || manga.cover_url)
   const go = (d) => setIdx((i) => (i + d + list.length) % list.length)
   return (
     <section className="relative mx-5 mt-5 overflow-hidden rounded-xl border border-line bg-panel">
@@ -393,19 +393,24 @@ function MangaDetailPanel({ manga, onClose }) {
   const [openedChapter, setOpenedChapter] = useState(null)
   const [loadingChapter, setLoadingChapter] = useState(false)
   const [openChapterError, setOpenChapterError] = useState("")
+  const [meta, setMeta] = useState(null)
 
-  const descriptions = Array.isArray(manga?.descriptions) && manga.descriptions.length
-    ? manga.descriptions
-    : (manga?.description ? [{ lang: "pt-br", text: manga.description }] : [])
+  // Lista da home e enxuta; os metadados ricos (sinopse multi-idioma, generos,
+  // autores, idiomas) vem do /api/chapters (payload.manga) e sao mesclados aqui.
+  const detail = useMemo(() => ({ ...manga, ...(meta || {}) }), [manga, meta])
+
+  const descriptions = Array.isArray(detail?.descriptions) && detail.descriptions.length
+    ? detail.descriptions
+    : (detail?.description ? [{ lang: "pt-br", text: detail.description }] : [])
   const [descLang, setDescLang] = useState(descriptions[0]?.lang ?? "pt-br")
   useEffect(() => {
     setDescLang(descriptions[0]?.lang ?? "pt-br")
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [manga?.id])
+  }, [manga?.id, meta])
   const activeDesc = descriptions.find((d) => d.lang === descLang) ?? descriptions[0]
 
   const chapterLangs = useMemo(() => {
-    const raw = (manga?.chapter_languages ?? []).map((l) => String(l).toLowerCase())
+    const raw = (detail?.chapter_languages ?? []).map((l) => String(l).toLowerCase())
     const uniq = [...new Set(raw)]
     const pt = uniq.filter((l) => l === "pt-br" || l === "pt")
     const en = uniq.filter((l) => l === "en")
@@ -413,7 +418,7 @@ function MangaDetailPanel({ manga, onClose }) {
     const ordered = [...pt, ...en, ...rest]
     return ordered.length ? ordered : ["pt-br"]
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [manga?.id])
+  }, [manga?.id, meta])
   const [chapterLang, setChapterLang] = useState(chapterLangs[0])
   useEffect(() => {
     setChapterLang(chapterLangs[0])
@@ -430,6 +435,7 @@ function MangaDetailPanel({ manga, onClose }) {
     setOpenedChapter(null)
     setLoadingChapter(false)
     setOpenChapterError("")
+    setMeta(null)
 
     const load = async () => {
       try {
@@ -445,6 +451,7 @@ function MangaDetailPanel({ manga, onClose }) {
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
         const payload = await response.json()
         setChapters(payload.chapters ?? [])
+        setMeta(payload.manga ?? null)
         setResolvedSource(payload.resolved_source || payload.provider || "")
         setSourceChanged(
           Boolean(payload.resolved_source_url)
@@ -519,9 +526,9 @@ function MangaDetailPanel({ manga, onClose }) {
 
         <div className="overflow-y-auto px-5 py-5">
           <div className="grid grid-cols-[132px_1fr] gap-4">
-            {manga.cover_url ? (
+            {manga.cover_path || manga.cover_url ? (
               <img
-                src={resolveApiUrl(manga.cover_url)}
+                src={resolveApiUrl(manga.cover_path || manga.cover_url)}
                 alt={`Capa de ${manga.title}`}
                 className="h-48 w-32 rounded object-cover"
                 loading="eager"
@@ -535,7 +542,7 @@ function MangaDetailPanel({ manga, onClose }) {
 
             <div className="space-y-3 text-sm">
               <div className="flex flex-wrap gap-2">
-                {manga.genres?.slice(0, 6).map((genre) => (
+                {detail.genres?.slice(0, 6).map((genre) => (
                   <span key={genre} className="rounded border border-line bg-soft px-2 py-1 text-xs text-muted">
                     {genre}
                   </span>
@@ -565,9 +572,9 @@ function MangaDetailPanel({ manga, onClose }) {
                   {activeDesc?.text || "Sem sinopse disponivel nessa fonte."}
                 </p>
               </div>
-              {manga.authors?.length > 0 && (
+              {detail.authors?.length > 0 && (
                 <p className="text-xs text-zinc-500">
-                  Autores: {manga.authors.slice(0, 4).join(", ")}
+                  Autores: {detail.authors.slice(0, 4).join(", ")}
                 </p>
               )}
             </div>
@@ -690,7 +697,7 @@ export default function App() {
       setError("")
       try {
         const trimmedQuery = query.trim()
-        const params = new URLSearchParams({ limit: trimmedQuery ? "40" : "80" })
+        const params = new URLSearchParams({ limit: trimmedQuery ? "40" : "32" })
         if (trimmedQuery) params.set("q", trimmedQuery)
         const response = await fetch(`${API_BASE_URL}/api/mangas?${params}`, {
           signal: controller.signal,

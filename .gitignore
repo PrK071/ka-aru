@@ -108,5 +108,6 @@ Thumbs.db
 
 # Chat-saves / backups locais e bancos exportados (nao publicar)
 leviathan-*.json
+mangatemp-*.json
 *.session.json
 *.sqlite-export.json

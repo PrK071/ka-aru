@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 import mimetypes
 import json
+import logging
+import random
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass
@@ -14,8 +16,15 @@ import requests
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
-from reader_server import MangaReader, fuzzy_match_score, normalize_match_text
+from reader_server import (
+    DEFAULT_HEADERS,
+    MangaReader,
+    fuzzy_match_score,
+    normalize_match_text,
+)
 
 
 CATALOG_CACHE_TTL_SECONDS = 30 * 60
@@ -29,10 +38,69 @@ ANILIST_CACHE_TTL_SECONDS = 12 * 60 * 60
 KITSU_CACHE_TTL_SECONDS = 12 * 60 * 60
 TRANSLATION_CACHE_TTL_SECONDS = 24 * 60 * 60
 DEFAULT_LIMIT = 80
-SOURCE_SEARCH_TIMEOUT_SECONDS = 5.0
+SOURCE_SEARCH_TIMEOUT_SECONDS = 8.0
 SOURCE_RESOLUTION_TIMEOUT_SECONDS = 5.0
 CATALOG_SNAPSHOT_TTL_SECONDS = 6 * 60 * 60
 CATALOG_SNAPSHOT_PATH = Path(__file__).resolve().parent / ".cache" / "catalog.json"
+
+# Capitulos basicos cacheados em disco (id/numero/titulo/lingua) -> rota local,
+# sem fetch externo a cada clique. TTL longo; sobrevive a restart.
+CHAPTERS_DISK_TTL_SECONDS = 24 * 60 * 60
+CHAPTERS_SNAPSHOT_PATH = Path(__file__).resolve().parent / ".cache" / "chapters.json"
+
+# Resiliencia da busca de capitulos: retry com backoff exponencial + rotacao de UA.
+CHAPTERS_FETCH_ATTEMPTS = 4          # 4 tentativas
+CHAPTERS_BACKOFF_BASE = 2.0          # espera 1s, 2s, 4s entre tentativas
+CHAPTERS_BACKOFF_START = 1.0
+
+logger = logging.getLogger("mangatemp")
+
+# User-Agents reais p/ rotacionar e fugir de filtros antibot/rate-limit.
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) "
+    "Version/17.4 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
+]
+
+# Arquivos estaticos servidos pelo FastAPI (capas baixadas na raspagem ficam aqui,
+# eliminando o proxy de imagem em tempo de execucao na home).
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+COVERS_DIR = STATIC_DIR / "covers"
+COVERS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Placeholder "Sem Capa" servido quando a obra nao tem capa local valida.
+# Fica em static/ (fora de covers/) p/ nao ser limpo junto com o cache de capas.
+PLACEHOLDER_PATH = STATIC_DIR / "placeholder.svg"
+PLACEHOLDER_URL = "/static/placeholder.svg"
+_PLACEHOLDER_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="320" height="460" viewBox="0 0 320 460">
+  <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#27272a"/><stop offset="1" stop-color="#161618"/></linearGradient></defs>
+  <rect width="320" height="460" fill="url(#g)"/>
+  <g fill="none" stroke="#52525b" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="100" y="140" width="120" height="160" rx="12"/>
+    <path d="M130 140 V300 M170 140 V300"/>
+  </g>
+  <text x="160" y="360" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif"
+        font-size="30" font-weight="700" fill="#a1a1aa">Sem Capa</text>
+</svg>
+"""
+
+
+def _ensure_placeholder() -> None:
+    try:
+        if not PLACEHOLDER_PATH.exists():
+            PLACEHOLDER_PATH.write_text(_PLACEHOLDER_SVG, encoding="utf-8")
+    except Exception:
+        pass
+
+
+_ensure_placeholder()
 
 MANGADEX_GENRES = {
     "Acao": "Action",
@@ -63,10 +131,11 @@ SOURCE_LABELS = {
     "sakura": "Sakura Mangas",
 }
 
-SEARCH_SOURCES = ["yumo", "mangasbrasuka", "mangalivre", "mangadex"]
-PT_COMPLETE_SOURCES = ["yumo", "mangasbrasuka", "mangalivre"]
+SEARCH_SOURCES = ["sakura", "yumo", "mangasbrasuka", "mangalivre", "mangadex"]
+PT_COMPLETE_SOURCES = ["sakura", "yumo", "mangasbrasuka", "mangalivre"]
 
 SOURCE_RELIABILITY = {
+    "sakura": 0.98,
     "yumo": 0.96,
     "mangalivre": 0.94,
     "mangasbrasuka": 0.92,
@@ -157,6 +226,74 @@ kitsu_cache: dict[str, CacheEntry] = {}
 translation_cache: dict[str, CacheEntry] = {}
 image_cache: dict[str, ImageCacheEntry] = {}
 
+_chapters_disk_lock = threading.Lock()
+
+
+def _load_chapters_snapshot() -> None:
+    """Carrega o cache de capitulos do disco p/ a memoria no startup."""
+    try:
+        if not CHAPTERS_SNAPSHOT_PATH.exists():
+            return
+        raw = json.loads(CHAPTERS_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+        for key, entry in (raw or {}).items():
+            if isinstance(entry, dict) and isinstance(entry.get("data"), dict):
+                chapters_cache[key] = CacheEntry(float(entry.get("saved_at") or 0), entry["data"])
+    except Exception:
+        pass
+
+
+def _save_chapters_snapshot() -> None:
+    """Persiste o cache de capitulos no disco (.cache/chapters.json)."""
+    try:
+        CHAPTERS_SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _chapters_disk_lock:
+            payload = {
+                key: {"saved_at": entry.saved_at, "data": entry.data}
+                for key, entry in chapters_cache.items()
+            }
+        CHAPTERS_SNAPSHOT_PATH.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+_load_chapters_snapshot()
+
+
+def _rotate_headers(attempt: int) -> None:
+    """Rotaciona User-Agent + headers reais (mutando o DEFAULT_HEADERS que os
+    fetchers do reader_server reaproveitam). O self.lock do reader serializa as
+    chamadas, entao a mutacao e segura entre tentativas.
+    """
+    DEFAULT_HEADERS["User-Agent"] = USER_AGENTS[attempt % len(USER_AGENTS)]
+    DEFAULT_HEADERS["Accept-Language"] = "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
+    DEFAULT_HEADERS["Accept"] = (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,*/*;q=0.8"
+    )
+
+
+def _resilient_list_chapters(source: str, lang: str) -> dict:
+    """Busca capitulos com RETRY + backoff exponencial + rotacao de UA.
+
+    Tenta CHAPTERS_FETCH_ATTEMPTS vezes (espera 1s, 2s, 4s...). So levanta
+    excecao se TODAS falharem — o chamador decide o fallback (cache stale).
+    """
+    last_exc: Exception | None = None
+    for attempt in range(CHAPTERS_FETCH_ATTEMPTS):
+        try:
+            _rotate_headers(attempt)
+            return reader.list_chapters(source, lang=lang)
+        except Exception as exc:  # noqa: BLE001 (rede/HTTP/timeout/parse)
+            last_exc = exc
+            if attempt < CHAPTERS_FETCH_ATTEMPTS - 1:
+                wait = CHAPTERS_BACKOFF_START * (CHAPTERS_BACKOFF_BASE ** attempt)
+                logger.warning(
+                    "list_chapters tentativa %d/%d falhou p/ %s (%s); retry em %.1fs",
+                    attempt + 1, CHAPTERS_FETCH_ATTEMPTS, source, exc, wait,
+                )
+                time.sleep(wait)
+    raise last_exc if last_exc else RuntimeError("Falha desconhecida ao buscar capitulos.")
+
 
 app = FastAPI(
     title="MangaTemp API",
@@ -173,6 +310,70 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
 )
+
+# Capas baixadas viram arquivo estatico: GET /static/covers/<manga_id>.<ext>
+# Cache-Control agressivo: o navegador guarda a capa "para sempre" e nem
+# revalida (immutable). Como o nome do arquivo e estavel por manga_id, isso e
+# seguro; se um dia precisar trocar a capa de um id, versione o nome do arquivo.
+class CachedStaticFiles(StaticFiles):
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
+app.mount("/static", CachedStaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+class MangaHomeSchema(BaseModel):
+    """Payload ENXUTO da home — so o estritamente necessario p/ o card.
+
+    Sem descricoes, sem descriptions_map, sem alternative_titles, sem lista de
+    capitulos e sem arrays de fallback de capa. `cover_path` aponta para o
+    arquivo LOCAL em /static/covers (servido como estatico, sem proxy em runtime).
+    `source_url` fica por ser indispensavel p/ abrir a obra no clique do card.
+    """
+
+    id: str
+    title: str
+    cover_path: str = ""
+    latest_chapter: str = ""
+    source_url: str = ""
+
+
+def _home_has_real_cover(item: dict) -> bool:
+    """Capa REAL FISICA no disco. Placeholder ou capa so-remota nao contam:
+    a obra so entra na home com arquivo local existente em /static/covers.
+    """
+    cover_path = str(item.get("cover_path") or "")
+    return bool(cover_path) and cover_path != PLACEHOLDER_URL and _cover_file_exists(cover_path)
+
+
+def _home_has_chapters(item: dict) -> bool:
+    """Tem capitulos associados (evita 'null caps' poluindo a home)."""
+    count = item.get("chapter_count")
+    try:
+        if count not in (None, "") and int(count) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return bool(str(item.get("latest_chapter") or "").strip())
+
+
+def _is_home_ready(item: dict) -> bool:
+    """Obra pronta p/ a linha de frente: tem capa real E capitulos."""
+    return _home_has_real_cover(item) and _home_has_chapters(item)
+
+
+def _home_item(item: dict) -> dict:
+    """Mapeia um item completo do catalogo -> dict ENXUTO da home (cover_path local)."""
+    return MangaHomeSchema(
+        id=str(item.get("id") or item.get("slug") or item.get("source_url") or ""),
+        title=str(item.get("title") or ""),
+        cover_path=str(item.get("cover_path") or item.get("cover_url") or PLACEHOLDER_URL),
+        latest_chapter=str(item.get("latest_chapter") or ""),
+        source_url=str(item.get("source_url") or item.get("url") or ""),
+    ).model_dump()
 
 
 def _cache_is_fresh(entry: CacheEntry | None, ttl: int) -> bool:
@@ -637,7 +838,20 @@ def _refresh_catalog_cache(limit: int = DEFAULT_LIMIT) -> None:
         }
         catalog_cache = CacheEntry(time.time(), data)
         _write_catalog_snapshot(data)
-        _prefetch_cover_images(items, limit=48)
+        # Baixa as capas p/ static/covers (define item['cover_path']) e re-grava o
+        # snapshot ja com os caminhos locais -> home serve estatico, sem proxy.
+        _download_covers_to_disk(bucket, limit=300)
+        # Capa falhou? tenta fonte alternativa (MangaDex/AniList por titulo);
+        # so marca placeholder (incompleta) se nem assim achar.
+        for it in bucket:
+            if _cover_file_exists(it.get("cover_path") or ""):
+                continue
+            if not _recover_and_store_cover(it):
+                it["cover_path"] = PLACEHOLDER_URL
+        catalog_cache = CacheEntry(time.time(), data)
+        _write_catalog_snapshot(data)
+        # Pre-aquece a lista de capitulos das obras (1x) -> 1o clique ja vem local.
+        _prewarm_chapters(bucket, limit=40)
     finally:
         with catalog_refresh_lock:
             catalog_refreshing = False
@@ -821,6 +1035,8 @@ def _search_source(name: str, query: str, limit: int) -> list[dict]:
         payload = reader.search_toomics(query, limit=limit, lang="pt-br")
     elif name == "mangasbrasuka":
         payload = reader.search_mangasbrasuka(query, limit=limit)
+    elif name == "sakura":
+        payload = reader.search_sakura(query, limit=limit)
     elif name == "yumo":
         payload = reader.search_yumo(query, limit=limit)
     else:
@@ -1592,6 +1808,169 @@ def _fetch_image(url: str) -> ImageCacheEntry:
     return entry
 
 
+def _cover_extension(media_type: str, url: str) -> str:
+    mt = (media_type or "").split(";", 1)[0].strip().lower()
+    by_mime = {
+        "image/webp": ".webp", "image/jpeg": ".jpg", "image/jpg": ".jpg",
+        "image/png": ".png", "image/gif": ".gif", "image/avif": ".avif",
+    }
+    if mt in by_mime:
+        return by_mime[mt]
+    path = urlparse(url).path.lower()
+    for ext in (".webp", ".jpg", ".jpeg", ".png", ".gif", ".avif"):
+        if path.endswith(ext):
+            return ".jpg" if ext == ".jpeg" else ext
+    return ".jpg"
+
+
+def _cover_file_exists(cover_path: str) -> bool:
+    """True se o cover_path /static/... aponta para um arquivo que existe no disco."""
+    cover_path = str(cover_path or "")
+    if not cover_path.startswith("/static/"):
+        return False
+    try:
+        return (STATIC_DIR / cover_path[len("/static/"):]).is_file()
+    except Exception:
+        return False
+
+
+def _cover_key(item: dict) -> str:
+    """Chave estavel p/ o nome do arquivo da capa (manga_id, fallback slug)."""
+    raw = str(item.get("id") or "").strip() or str(item.get("slug") or "") or str(item.get("title") or "")
+    return _slug(raw) or "cover"
+
+
+def _store_cover_local(item: dict) -> None:
+    """Baixa a capa 1x para static/covers/<manga_id>.<ext> e grava item['cover_path'].
+
+    Reusa _fetch_image (Referer correto + cache em memoria). Idempotente: se o
+    arquivo ja existe, so reusa o caminho.
+    """
+    src = str(item.get("cover_original_url") or "").strip() or _unproxy_image_url(item.get("cover_url") or "")
+    if not _is_remote_image_url(src):
+        return
+    key = _cover_key(item)
+    try:
+        existing = next(COVERS_DIR.glob(f"{key}.*"), None)
+        if existing and existing.stat().st_size > 0:
+            item["cover_path"] = f"/static/covers/{existing.name}"
+            return
+        entry = _fetch_image(src)
+        filename = f"{key}{_cover_extension(entry.media_type, src)}"
+        (COVERS_DIR / filename).write_bytes(entry.content)
+        item["cover_path"] = f"/static/covers/{filename}"
+    except Exception:
+        return  # falha de capa nao pode derrubar a raspagem
+
+
+def _download_covers_to_disk(items: list[dict], limit: int = 80, max_workers: int = 8) -> None:
+    targets = [
+        it for it in items
+        if str(it.get("cover_original_url") or it.get("cover_url") or "").strip()
+    ][:limit]
+    if not targets:
+        return
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        list(executor.map(_store_cover_local, targets))
+
+
+def _mangadex_cover_url(title: str) -> str:
+    """Capa via API MangaDex buscando por titulo (1o resultado)."""
+    title = str(title or "").strip()
+    if not title:
+        return ""
+    try:
+        resp = requests.get(
+            "https://api.mangadex.org/manga",
+            params={
+                "title": title,
+                "limit": 1,
+                "includes[]": "cover_art",
+                "contentRating[]": ["safe", "suggestive", "erotica"],
+                "order[relevance]": "desc",
+            },
+            timeout=15,
+            headers={"User-Agent": "python-requests/2.32.5"},
+        )
+        resp.raise_for_status()
+        data = resp.json().get("data") or []
+        if not data:
+            return ""
+        entry = data[0]
+        manga_id = entry.get("id")
+        file_name = next(
+            (
+                rel.get("attributes", {}).get("fileName")
+                for rel in entry.get("relationships") or []
+                if rel.get("type") == "cover_art" and rel.get("attributes")
+            ),
+            None,
+        )
+        if manga_id and file_name:
+            return f"https://uploads.mangadex.org/covers/{manga_id}/{file_name}"
+    except Exception:
+        return ""
+    return ""
+
+
+def _recover_cover_url(title: str) -> str:
+    """Tenta achar uma capa por TITULO: MangaDex -> AniList. '' se nada."""
+    url = _mangadex_cover_url(title)
+    if _is_remote_image_url(url):
+        return url
+    try:
+        poster = str(_anilist_metadata(title).get("poster") or "").strip()
+        return poster if _is_remote_image_url(poster) else ""
+    except Exception:
+        return ""
+
+
+def _recover_and_store_cover(item: dict) -> bool:
+    """Recupera a capa por titulo numa fonte alternativa e salva local.
+
+    Retorna True se conseguiu (cover_path setado p/ arquivo existente).
+    """
+    url = _recover_cover_url(str(item.get("title") or ""))
+    if not _is_remote_image_url(url):
+        return False
+    key = _cover_key(item)
+    try:
+        entry = _fetch_image(url)
+        filename = f"{key}{_cover_extension(entry.media_type, url)}"
+        (COVERS_DIR / filename).write_bytes(entry.content)
+        item["cover_path"] = f"/static/covers/{filename}"
+        item.setdefault("cover_original_url", url)
+        return _cover_file_exists(item["cover_path"])
+    except Exception:
+        return False
+
+
+def _prewarm_chapters(items: list[dict], limit: int = 40, max_workers: int = 4) -> None:
+    """Pre-busca a lista de capitulos das obras do catalogo (1x) e persiste em
+    disco, para o PRIMEIRO clique do usuario ja vir do cache local (sem fetch).
+    """
+    def warm(item: dict) -> None:
+        source_url = str(item.get("source_url") or "").strip()
+        if not source_url:
+            return
+        lang = str(item.get("language") or "pt-br")
+        key = f"{source_url}|{normalize_match_text(lang)}"
+        if _cache_is_fresh(chapters_cache.get(key), CHAPTERS_DISK_TTL_SECONDS):
+            return
+        try:
+            payload = reader.list_chapters(source_url, lang=lang)
+            chapters_cache[key] = CacheEntry(time.time(), dict(payload))
+        except Exception:
+            pass  # falha de uma obra nao derruba o prewarm
+
+    targets = [it for it in items if it.get("source_url")][:limit]
+    if not targets:
+        return
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        list(executor.map(warm, targets))
+    _save_chapters_snapshot()
+
+
 def _prefetch_cover_images(items: list[dict], limit: int = 48) -> None:
     urls: list[str] = []
     for item in items:
@@ -1684,42 +2063,115 @@ def list_mangas(
     offset: int = Query(default=0, ge=0),
 ) -> dict:
     query = q.strip()
+    genre_filter = normalize_match_text(genre)
+
+    def _matches_genre(item: dict) -> bool:
+        if not genre_filter:
+            return True
+        return any(
+            normalize_match_text(g) == genre_filter for g in (item.get("genres") or [])
+        )
+
+    # ---------------- BUSCA: mantem payload completo (poucos itens) ----------
     if query:
         data = _search_mangas(query, limit=max(limit + offset, limit))
-    else:
-        data = _build_catalog(limit=max(limit + offset, limit))
-
-    items = data.get("items") or []
-    sections = data.get("sections") or [{"title": "Resultados", "items": items}]
-    genre_filter = normalize_match_text(genre)
-    if genre_filter:
-        items = [
-            item
-            for item in items
-            if any(normalize_match_text(genre_name) == genre_filter for genre_name in item.get("genres") or [])
-        ]
+        items = [it for it in (data.get("items") or []) if _matches_genre(it)]
         sections = [
-            {
-                "title": section.get("title"),
-                "items": [
-                    item for item in section.get("items") or []
-                    if any(normalize_match_text(genre_name) == genre_filter for genre_name in item.get("genres") or [])
-                ],
-            }
-            for section in sections
+            {"title": sec.get("title"), "items": [it for it in (sec.get("items") or []) if _matches_genre(it)]}
+            for sec in (data.get("sections") or [{"title": "Resultados", "items": items}])
         ]
-        sections = [section for section in sections if section["items"]]
+        sections = [sec for sec in sections if sec["items"]]
+        paged = items[offset : offset + limit]
+        result = {**data, "items": paged, "sections": sections,
+                  "total": len(items), "limit": limit, "offset": offset}
+        _finalize_payload_descriptions(result)  # traducao so na busca
+        return result
+
+    # ---------------- HOME: payload ENXUTO, SEM traducao --------------------
+    # So obras PRONTAS na linha de frente: com capa real + capitulos.
+    # (filtro so na home; a busca acima nao e afetada)
+    data = _build_catalog(limit=max(limit + offset, limit))
+    items = [it for it in (data.get("items") or []) if _matches_genre(it) and _is_home_ready(it)]
+    sections_src = data.get("sections") or [{"title": "Destaques", "items": items}]
+
     paged = items[offset : offset + limit]
-    result = {
-        **data,
-        "items": paged,
-        "sections": sections,
+    slim_items = [_home_item(it) for it in paged]
+    slim_sections = []
+    for sec in sections_src:
+        sec_items = [
+            _home_item(it) for it in (sec.get("items") or [])
+            if _matches_genre(it) and _is_home_ready(it)
+        ]
+        if sec_items:
+            slim_sections.append({"title": sec.get("title"), "items": sec_items})
+
+    return {
+        "items": slim_items,
+        "sections": slim_sections,
         "total": len(items),
         "limit": limit,
         "offset": offset,
+        "sources": data.get("sources") or [],
+        "cached": data.get("cached", False),
+        "refreshing": data.get("refreshing", False),
     }
-    _finalize_payload_descriptions(result)
-    return result
+
+
+def _find_catalog_item(source_url: str) -> dict | None:
+    """Acha o item completo do catalogo (com descriptions_map/genres/autores) pelo source_url."""
+    source_url = str(source_url or "").strip()
+    if not source_url or catalog_cache is None:
+        return None
+    data = catalog_cache.data or {}
+    pools = [data.get("items") or []]
+    for section in data.get("sections") or []:
+        pools.append(section.get("items") or [])
+    for pool in pools:
+        for item in pool:
+            if str(item.get("source_url") or "") == source_url:
+                return item
+    return None
+
+
+def _build_manga_meta(item: dict | None, source_url: str) -> dict:
+    """Metadados ricos p/ o painel de detalhe: sinopse multi-idioma, generos,
+    autores, status, rating e idiomas de capitulo. Vem do catalogo (preferido)
+    ou, em ultimo caso, de uma consulta de metadata externa best-effort.
+    """
+    enriched: dict | None = None
+    if item:
+        enriched = dict(item)
+        _finalize_descriptions(enriched)  # descriptions_map -> descriptions[] (PT/EN/...) + traducao
+    else:
+        try:
+            md = reader.manga_metadata(source_url, include_chapters=False) or {}
+            mg = md.get("manga") or {}
+            rating = mg.get("rating")
+            if isinstance(rating, dict):
+                rating = rating.get("score")
+            enriched = {
+                "description": mg.get("description") or "",
+                "descriptions_map": mg.get("descriptions") or {},
+                "genres": mg.get("genres") or [],
+                "authors": mg.get("authors") or [],
+                "status": mg.get("status") or "",
+                "rating": rating,
+                "chapter_languages": [str(l).lower() for l in (md.get("available_translated_languages") or [])],
+                "alternative_titles": mg.get("alternative_titles") or [],
+            }
+            _finalize_descriptions(enriched)
+        except Exception:
+            return {}
+    return {
+        "description": enriched.get("description") or "",
+        "descriptions": enriched.get("descriptions") or [],
+        "genres": enriched.get("genres") or [],
+        "authors": enriched.get("authors") or [],
+        "status": enriched.get("status") or "",
+        "rating": enriched.get("rating"),
+        "chapter_languages": enriched.get("chapter_languages") or [],
+        "alternative_titles": enriched.get("alternative_titles") or [],
+    }
 
 
 @app.get("/api/chapters")
@@ -1745,22 +2197,38 @@ def list_chapters(
 
     cache_key = f"{source}|{normalize_match_text(lang)}"
     cached = chapters_cache.get(cache_key)
-    if _cache_is_fresh(cached, CHAPTERS_CACHE_TTL_SECONDS):
+    if _cache_is_fresh(cached, CHAPTERS_DISK_TTL_SECONDS):
         payload = dict(cached.data)
         payload["cached"] = True
     else:
+        # MISS: tenta a fonte externa com RETRY+backoff+UA rotation.
         try:
-            payload = reader.list_chapters(source, lang=lang)
+            payload = _resilient_list_chapters(source, lang)
+            chapters_cache[cache_key] = CacheEntry(time.time(), dict(payload))
+            _save_chapters_snapshot()
+            payload["cached"] = False
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        chapters_cache[cache_key] = CacheEntry(time.time(), dict(payload))
-        payload["cached"] = False
+            # ULTIMO RECURSO: se existe cache local (mesmo VELHO), serve ele e
+            # nao trava o front. So estoura 502 se nunca tivermos cacheado.
+            if cached is not None and isinstance(cached.data, dict) and cached.data:
+                logger.warning(
+                    "Fonte externa indisponivel p/ %s apos %d tentativas (%s); "
+                    "servindo cache STALE.", source, CHAPTERS_FETCH_ATTEMPTS, exc,
+                )
+                payload = dict(cached.data)
+                payload["cached"] = True
+                payload["stale"] = True
+            else:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
     payload["requested_source_url"] = requested_source
     payload["resolved_source_url"] = source
     if resolved_item:
-        _finalize_descriptions(resolved_item)
-        payload["resolved_manga"] = resolved_item
         payload["resolved_source"] = _source_label(payload.get("provider") or resolved_item.get("provider"))
+
+    # Metadados completos da obra (sinopse multi-idioma, generos, autores, status,
+    # idiomas de capitulo) p/ o painel de detalhe — sem inchar a LISTA da home.
+    meta_item = resolved_item or _find_catalog_item(source) or _find_catalog_item(requested_source)
+    payload["manga"] = _build_manga_meta(meta_item, source)
     return payload
 
 

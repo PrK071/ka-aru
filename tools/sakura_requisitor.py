@@ -244,6 +244,42 @@ def is_rate_limited(page) -> tuple[bool, str]:
     return (False, "")
 
 
+def is_cloudflare_blocked(page) -> tuple[bool, str]:
+    """Detecta o block DURO do Cloudflare (1020 / WAF). Retorna (bool, ray_id).
+
+    Diferente do challenge Turnstile: NAO ha desafio p/ resolver -- o firewall
+    nega o acesso pelo IP/fingerprint. So sai trocando de IP (--proxy/VPN),
+    esperando o block envelhecer, ou o dono do site liberar.
+    """
+    try:
+        title = (page.title() or "").casefold()
+    except Exception:
+        title = ""
+    try:
+        info = page.evaluate(
+            """() => {
+                const b = document.body;
+                if (!b) return '';
+                return (b.textContent || '').replace(/\\s+/g, ' ').slice(0, 2000);
+            }"""
+        ) or ""
+    except Exception:
+        info = ""
+    low = info.casefold()
+    blocked = (
+        "attention required" in title
+        or "sorry, you have been blocked" in low
+        or "you are unable to access" in low
+    )
+    if not blocked:
+        return (False, "")
+    ray = ""
+    m = re.search(r"Ray ID:\s*([0-9a-f]+)", info, re.IGNORECASE)
+    if m:
+        ray = m.group(1).strip()
+    return (True, ray)
+
+
 def wait_for_user_to_pass(page, timeout_seconds: int) -> None:
     if not is_cloudflare_challenge(page):
         return
@@ -563,6 +599,9 @@ def extract_blob_pages(page, selector: str, target: Path) -> list[dict]:
 CAPTURE_IMAGE_MIMES = ("image/jpeg", "image/jpg", "image/png", "image/webp", "image/avif", "image/gif")
 CAPTURE_SKIP_HINTS = ("logo", "sprite", "avatar", "favicon", "icon", "/ads", "a-ads", "banner", "captcha", "thumb")
 CAPTURE_MIN_BYTES = 6_000  # descarta icones/ui pequenos
+
+# Cookies sensiveis: nunca gravar valor no manifest (mesmo com --dump-cookies).
+SENSITIVE_COOKIES = {"cf_clearance", "__cf_bm", "__cfwaituntil"}
 
 
 def attach_image_capture(page) -> list[dict]:
@@ -1045,6 +1084,17 @@ def run(args: argparse.Namespace) -> int:
             # Passou pelo Cloudflare: persiste o cf_clearance atual p/ reuso.
             current_ua = page.evaluate("() => navigator.userAgent") or ""
             save_clearance_cache(args, context.cookies(), current_ua)
+
+            # Block DURO do Cloudflare (1020/WAF): IP/fingerprint negado, sem desafio.
+            blocked, ray = is_cloudflare_blocked(page)
+            if blocked:
+                raise RuntimeError(
+                    "Cloudflare bloqueou o acesso (1020 'Sorry, you have been blocked')"
+                    + (f" - Ray ID {ray}." if ray else ".")
+                    + " Nao ha desafio p/ resolver: o IP/fingerprint esta na blocklist. "
+                    "Use --proxy/VPN p/ trocar de IP, espere o block envelhecer, ou peca "
+                    "ao dono do site p/ liberar."
+                )
 
             # Lockout por IP do proprio site ("Rapido demais!").
             limited, when = is_rate_limited(page)

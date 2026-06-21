@@ -49,3 +49,17 @@ Abra `http://127.0.0.1:5173`.
 - Busca tenta fontes PT-BR completas antes de fallback internacional.
 - Debug MangasBrasuka: `tools/debug/mangasbrasuka_scraper.py`.
 - Saída local `downloads_brasuka/` fica ignorada pelo Git.
+
+## Sakura Mangas (`blob:`)
+
+Antes do backend, abra navegador normal dedicado e conclua Cloudflare
+manualmente na primeira execução:
+
+```powershell
+python tools/start_sakura_browser.py
+```
+
+Mantenha a janela aberta. O backend conecta apenas em `127.0.0.1:9333`,
+pesquisa obras, lista capítulos e deixa o leitor original gerar as imagens. Os
+bytes dos `blob:` são copiados para cache temporária e servidos ao React por
+`/api/reader-image/{index}`. O perfil `.sakura-browser-profile/` preserva a sessão.

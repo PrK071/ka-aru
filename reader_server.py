@@ -156,7 +156,7 @@ DEFAULT_MANGALIVRE_BASE_URL = "https://mangalivre.blog"
 DEFAULT_YUMO_API_BASE = "https://api.yomumangas.com"
 DEFAULT_YUMO_CDN_BASE = "https://b2.yomumangas.com"
 DEFAULT_SAKURA_BASE_URL = "https://sakuramangas.org"
-DEFAULT_SAKURA_CDP_URL = "http://127.0.0.1:9222"
+DEFAULT_SAKURA_CDP_URL = "http://127.0.0.1:9333"
 DEFAULT_SAKURA_PROFILE_DIR = ".sakura-browser-profile"
 SAKURA_FALLBACK_SELECTOR = "img[src^='blob:']"
 SAKURA_BRAVE_PATHS = (
@@ -1504,24 +1504,65 @@ class MangaReader:
     # ------------------------------------------------------------------
     # Sakura Mangas (leitor baseado em blob: protegido por Cloudflare)
     # ------------------------------------------------------------------
+    def _sakura_source_parts(self, source_url: str) -> tuple[str, str | None] | None:
+        value = (source_url or "").strip()
+        if not value:
+            return None
+
+        if value.startswith("sakura://"):
+            parsed = urlparse(value)
+            parts = [unquote(part) for part in parsed.path.split("/") if part]
+            if parsed.netloc in {"manga", "obra"} and parts:
+                return parts[0], None
+            if parsed.netloc in {"chapter", "capitulo"} and len(parts) >= 2:
+                return parts[0], parts[1]
+            return None
+
+        parsed = urlparse(urljoin(f"{self.sakura_base_url}/", value))
+        if parsed.hostname not in {"sakuramangas.org", "www.sakuramangas.org"}:
+            return None
+        parts = [unquote(part) for part in parsed.path.split("/") if part]
+        try:
+            obras_index = parts.index("obras")
+        except ValueError:
+            return None
+        if obras_index + 1 >= len(parts):
+            return None
+        slug = parts[obras_index + 1]
+        chapter_slug = parts[obras_index + 2] if obras_index + 2 < len(parts) else None
+        if chapter_slug and "." in chapter_slug:
+            chapter_slug = None
+        return slug, chapter_slug
+
     def _is_sakura_source(self, source_url: str) -> bool:
-        return bool(
-            re.search(r"sakuramangas\.org", source_url or "", re.IGNORECASE)
-            or (source_url or "").startswith("sakura://")
-        )
+        return self._sakura_source_parts(source_url) is not None
+
+    def _sakura_chapter_parts(self, source_url: str) -> tuple[str, str] | None:
+        parts = self._sakura_source_parts(source_url)
+        if not parts or not parts[1]:
+            return None
+        return parts[0], parts[1]
+
+    @staticmethod
+    def _sakura_number_from_slug(chapter_slug: str | None) -> str | None:
+        match = re.match(r"^(\d+)(?:-(\d+))?", chapter_slug or "")
+        if not match:
+            return None
+        return f"{match.group(1)}.{match.group(2)}" if match.group(2) else match.group(1)
 
     def _sakura_chapter_number_from_source(self, source_url: str) -> str | None:
-        parsed = urlparse(source_url)
-        raw = unquote(f"{parsed.path} {parsed.query}")
-        match = re.search(r"(?:chapter|capitulo|cap)[-/_.\s]*(\d+(?:\.\d+)?)", raw, re.IGNORECASE)
-        if match:
-            return match.group(1)
-        numbers = re.findall(r"\d+(?:\.\d+)?", raw)
-        return numbers[-1] if numbers else None
+        parts = self._sakura_chapter_parts(source_url)
+        return self._sakura_number_from_slug(parts[1]) if parts else None
+
+    def _sakura_manga_url(self, slug: str) -> str:
+        return f"{self.sakura_base_url}/obras/{quote(slug, safe='-._~')}"
+
+    def _sakura_chapter_url(self, manga_slug: str, chapter_slug: str) -> str:
+        return f"{self._sakura_manga_url(manga_slug)}/{quote(chapter_slug, safe='-._~')}"
 
     def _sakura_label_from_url(self, url: str, title: str | None = None) -> str:
         if title:
-            title = re.sub(r"\s*[-|]\s*Sakura\s*Mangas.*$", "", title, flags=re.IGNORECASE).strip()
+            title = re.sub(r"\s*[-|]\s*Sakura\s*Mang[aá]s.*$", "", title, flags=re.IGNORECASE).strip()
         if title:
             return clean_filename(title, fallback="sakura-chapter")
 
@@ -1537,20 +1578,202 @@ class MangaReader:
         source_url: str,
         preferred_chapter: str | None = None,
     ) -> list[Chapter]:
-        if not self._is_sakura_source(source_url):
+        parts = self._sakura_source_parts(source_url)
+        if not parts:
             raise ValueError("Informe uma URL do Sakura Mangas.")
+        _manga, chapters = self._sakura_scrape_manga(self._sakura_manga_url(parts[0]))
+        if chapters:
+            return chapters
 
         number_text = self._sakura_chapter_number_from_source(source_url) or preferred_chapter
-        title = f"Capitulo {number_text}" if number_text else "Capitulo Sakura"
-        return [
-            Chapter(
-                url=source_url.strip(),
+        if not parts[1]:
+            return []
+        return [Chapter(
+            url=self._sakura_chapter_url(parts[0], parts[1]),
+            number=parse_float(number_text),
+            number_text=number_text,
+            chapter_id=f"sakura:{parts[0]}:{parts[1]}",
+            title=f"Capitulo {number_text}" if number_text else "Capitulo Sakura",
+        )]
+
+    def search_sakura(self, keyword: str, limit: int = 12) -> dict:
+        keyword = keyword.strip()
+        if not keyword:
+            raise ValueError("Digite o nome do manga para buscar no Sakura Mangas.")
+
+        def collect(page):
+            page.wait_for_selector("#modal-search-input", state="attached", timeout=15_000)
+            page.evaluate(
+                """term => {
+                    const input = document.querySelector('#modal-search-input');
+                    input.value = term;
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                }""",
+                keyword,
+            )
+            try:
+                page.wait_for_function(
+                    """() => {
+                        const box = document.querySelector('#modal-search-results');
+                        return box && (
+                            box.querySelector('a.result-link[href]') ||
+                            !box.querySelector('.skeleton-item')
+                        );
+                    }""",
+                    timeout=12_000,
+                )
+            except PlaywrightTimeoutError:
+                pass
+            return page.eval_on_selector_all(
+                "#modal-search-results a.result-link[href]",
+                """(links, maxItems) => links.slice(0, maxItems).map(link => ({
+                    id: link.getAttribute('data-manga-id') || '',
+                    url: new URL(link.getAttribute('href'), document.baseURI).href,
+                    title: (link.querySelector('h5')?.textContent || '').trim(),
+                    poster: link.querySelector('img')?.currentSrc || link.querySelector('img')?.src || '',
+                    rating: (link.querySelector('.nota-pesquisa')?.textContent || '').trim(),
+                    badges: Array.from(link.querySelectorAll('.badge')).map(x => (x.textContent || '').trim()).filter(Boolean),
+                }))""",
+                limit,
+            )
+
+        raw_items = self._sakura_run_page(self.sakura_base_url, collect)
+        results: list[dict] = []
+        for raw in raw_items or []:
+            title = normalize_text(str(raw.get("title") or ""))
+            url = normalize_image_url(str(raw.get("url") or ""), self.sakura_base_url)
+            if not title or not url:
+                continue
+            badges = [normalize_text(str(value)) for value in raw.get("badges") or []]
+            genres = [
+                value for value in badges
+                if value and not re.fullmatch(r"\d{4}", value)
+                and value.casefold() not in {"em andamento", "concluido", "concluído", "cancelado", "pausado"}
+            ]
+            status = next(
+                (value for value in badges if value.casefold() in {"em andamento", "concluido", "concluído", "cancelado", "pausado"}),
+                "",
+            )
+            results.append({
+                "id": str(raw.get("id") or ""),
+                "title": title,
+                "url": url,
+                "poster": normalize_image_url(str(raw.get("poster") or ""), self.sakura_base_url),
+                "provider": "sakura",
+                "source": "sakura",
+                "language": "pt-br",
+                "available_translated_languages": ["pt-br"],
+                "rating": parse_float(str(raw.get("rating") or "")),
+                "genres": genres,
+                "status": status,
+            })
+        return {
+            "ok": True,
+            "provider": "sakura",
+            "keyword": keyword,
+            "count": len(results),
+            "results": results[:limit],
+        }
+
+    def _sakura_load_all_chapters(self, page) -> None:
+        chapter_locator = page.locator(".chapter-item[data-url]")
+        for _ in range(100):
+            button = page.locator("#ver-mais")
+            if button.count() != 1 or not button.is_visible() or not button.is_enabled():
+                break
+            previous = chapter_locator.count()
+            try:
+                button.click(timeout=5000)
+                page.wait_for_function(
+                    "before => document.querySelectorAll('.chapter-item[data-url]').length > before",
+                    arg=previous,
+                    timeout=5000,
+                )
+            except PlaywrightTimeoutError:
+                break
+            if chapter_locator.count() <= previous:
+                break
+
+    def _sakura_scrape_manga(self, source_url: str) -> tuple[dict, list[Chapter]]:
+        parts = self._sakura_source_parts(source_url)
+        if not parts:
+            raise ValueError("Informe uma URL de obra do Sakura Mangas.")
+        manga_url = self._sakura_manga_url(parts[0])
+
+        def collect(page):
+            page.wait_for_selector("img.capa, .chapter-list", state="attached", timeout=20_000)
+            if page.locator(".chapter-item[data-url]").count() > 0:
+                self._sakura_load_all_chapters(page)
+            return page.evaluate(
+                r"""() => {
+                    const meta = key => document.querySelector(`meta[name="${key}"], meta[property="${key}"]`)?.content || '';
+                    const ogTitle = meta('og:title').replace(/\s*-\s*Sakura Mang[aá]s\s*$/i, '').trim();
+                    const links = selector => Array.from(document.querySelectorAll(selector));
+                    return {
+                        title: ogTitle || document.title.replace(/\s*-\s*Sakura Mang[aá]s\s*$/i, '').trim(),
+                        description: meta('description') || meta('og:description'),
+                        poster: document.querySelector('img.capa')?.currentSrc || document.querySelector('img.capa')?.src || '',
+                        authors: links('a[href*="autor="]').map(x => (x.textContent || '').trim()).filter(Boolean),
+                        genres: links('a[href*="incluir="]').map(x => (x.textContent || '').trim()).filter(Boolean),
+                        status: (document.querySelector('a[href*="status="]')?.textContent || '').trim(),
+                        chapters: links('.chapter-item[data-url]').map(item => ({
+                            id: item.getAttribute('data-id') || '',
+                            url: new URL(item.getAttribute('data-url'), document.baseURI).href,
+                            label: (item.querySelector('.title-text')?.textContent || '').trim(),
+                            title: (item.querySelector('.subtitle-text')?.textContent || '').trim(),
+                        })),
+                    };
+                }"""
+            )
+
+        raw = self._sakura_run_page(manga_url, collect)
+        chapters: list[Chapter] = []
+        seen: set[str] = set()
+        for item in raw.get("chapters") or []:
+            chapter_parts = self._sakura_chapter_parts(str(item.get("url") or ""))
+            if not chapter_parts:
+                continue
+            chapter_url = self._sakura_chapter_url(*chapter_parts)
+            if chapter_url in seen:
+                continue
+            seen.add(chapter_url)
+            label = normalize_text(str(item.get("label") or ""))
+            number_match = re.search(r"(?:cap\.?|capitulo|capítulo)\s*(\d+(?:[.,]\d+)?)", label, re.IGNORECASE)
+            number_text = (
+                number_match.group(1).replace(",", ".")
+                if number_match else self._sakura_number_from_slug(chapter_parts[1])
+            )
+            chapters.append(Chapter(
+                url=chapter_url,
+                label=label,
                 number=parse_float(number_text),
                 number_text=number_text,
-                chapter_id=source_url.strip(),
-                title=title,
-            )
-        ]
+                chapter_id=f"sakura:{chapter_parts[0]}:{item.get('id') or chapter_parts[1]}",
+                title=normalize_text(str(item.get("title") or "")) or label,
+            ))
+        chapters.sort(key=lambda chapter: (
+            chapter.number is None,
+            chapter.number if chapter.number is not None else 0.0,
+            chapter.url,
+        ))
+        manga = {
+            "slug": parts[0],
+            "url": manga_url,
+            "title": normalize_text(str(raw.get("title") or "")) or parts[0].replace("-", " ").title(),
+            "alternative_title": None,
+            "status": normalize_text(str(raw.get("status") or "")) or None,
+            "type": "Manga",
+            "poster": normalize_image_url(str(raw.get("poster") or ""), manga_url),
+            "description": normalize_text(str(raw.get("description") or "")),
+            "latest_chapter": chapters[-1].number_text if chapters else None,
+            "authors": list(dict.fromkeys(normalize_text(str(x)) for x in raw.get("authors") or [] if str(x).strip())),
+            "genres": list(dict.fromkeys(normalize_text(str(x)) for x in raw.get("genres") or [] if str(x).strip())),
+            "magazines": [],
+            "published": None,
+            "rating": {},
+            "languages": [{"code": "pt-br", "title": "Portugues (Brasil)", "chapter_count": len(chapters)}],
+        }
+        return manga, chapters
 
     @staticmethod
     def _sakura_image_extension(mime: str, content: bytes) -> str:
@@ -1580,38 +1803,76 @@ class MangaReader:
             title = (page.title() or "").casefold()
         except Exception:
             return False
-        return any(marker in title for marker in ("just a moment", "um momento", "verificando"))
+        return any(marker in title for marker in (
+            "just a moment",
+            "um momento",
+            "verificando",
+        ))
 
-    def _sakura_wait_for_access(self, page) -> None:
+    @staticmethod
+    def _sakura_is_blocked(page) -> bool:
+        try:
+            title = (page.title() or "").casefold()
+            current_url = page.url or ""
+        except Exception:
+            return False
+        return (
+            "/manutencao/block.php" in current_url
+            or "attention required" in title
+            or "atenção necessária" in title
+        )
+
+    def _sakura_wait_for_access(self, page, interactive: bool) -> None:
+        if self._sakura_is_blocked(page):
+            raise RuntimeError(
+                "Cloudflare bloqueou este IP no Sakura Mangas (Attention Required). "
+                "Como administrador do site, remova o bloqueio ou crie uma regra de allowlist "
+                "para este IP; depois recarregue o Chrome Sakura."
+            )
         if not self._sakura_is_challenge(page):
             return
-        show_browser = bool(getattr(self.args, "show_browser", False))
-        if not show_browser:
+        if not interactive:
             raise RuntimeError(
-                "Cloudflare pediu verificacao no Sakura Mangas. Rode com --show-browser "
-                "(ou abra o Chrome em modo CDP via --sakura-cdp-url) e conclua a verificacao."
+                "Cloudflare pediu verificacao no Sakura Mangas. Inicie um Chrome normal "
+                "com tools/start_sakura_browser.py e conclua a verificacao manual."
             )
         deadline = time.monotonic() + self.sakura_challenge_timeout
         while time.monotonic() < deadline:
             page.wait_for_timeout(1000)
+            if self._sakura_is_blocked(page):
+                raise RuntimeError("Cloudflare redirecionou o Chrome Sakura para bloqueio de IP.")
             if not self._sakura_is_challenge(page):
                 return
         raise TimeoutError("Cloudflare nao foi concluido no tempo limite no Sakura Mangas.")
 
     def _open_sakura_context(self, playwright):
-        """Retorna (context, cleanup). Tenta CDP; cai para perfil persistente."""
+        """Retorna (context, cleanup, interactive). Tenta CDP; cai para perfil persistente."""
         cdp_url = (self.sakura_cdp_url or "").strip()
+        cdp_error = ""
         if cdp_url:
+            parsed_cdp = urlparse(cdp_url)
+            if parsed_cdp.scheme not in {"http", "https"} or parsed_cdp.hostname not in {
+                "127.0.0.1", "localhost", "::1"
+            }:
+                raise ValueError("SAKURA_CDP_URL deve apontar para localhost.")
             try:
                 browser = playwright.chromium.connect_over_cdp(cdp_url, timeout=8000)
                 context = browser.contexts[0] if browser.contexts else browser.new_context()
-                return context, browser.close
-            except Exception:
-                pass
+                # sync_playwright().stop() desconecta do CDP. Nao feche o Chrome do usuario.
+                return context, (lambda: None), True
+            except Exception as exc:
+                cdp_error = str(exc).splitlines()[0]
 
         profile = Path(self.sakura_profile_dir).resolve()
         profile.mkdir(parents=True, exist_ok=True)
         show_browser = bool(getattr(self.args, "show_browser", False))
+        if not show_browser:
+            detail = f" Detalhe CDP: {cdp_error}" if cdp_error else ""
+            raise RuntimeError(
+                "Chrome Sakura nao esta disponivel em "
+                f"{cdp_url or DEFAULT_SAKURA_CDP_URL}. Rode: python tools/start_sakura_browser.py."
+                + detail
+            )
         launch_options = {
             "user_data_dir": str(profile),
             "headless": not show_browser,
@@ -1627,12 +1888,43 @@ class MangaReader:
         for opts in candidates:
             try:
                 context = playwright.chromium.launch_persistent_context(**opts, **launch_options)
-                return context, context.close
+                return context, context.close, show_browser
             except Exception as exc:
                 errors.append(str(exc).splitlines()[0])
         raise RuntimeError(
             "Nenhum Chromium compativel abriu para o Sakura Mangas: " + " | ".join(errors)
         )
+
+    def _sakura_run_page(self, url: str, action, init_script: str | None = None):
+        if sync_playwright is None:
+            raise RuntimeError(
+                "Playwright nao esta instalado. Rode: python -m pip install -r requirements.txt"
+            )
+        with self._sakura_browser_lock:
+            try:
+                with sync_playwright() as playwright:
+                    context, cleanup, interactive = self._open_sakura_context(playwright)
+                    page = context.new_page()
+                    try:
+                        if init_script:
+                            page.add_init_script(init_script)
+                        timeout_ms = max(int(self.args.timeout) * 1000, 60_000)
+                        page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                        self._sakura_wait_for_access(page, interactive)
+                        return action(page)
+                    finally:
+                        try:
+                            page.close()
+                        except Exception:
+                            pass
+                        try:
+                            cleanup()
+                        except Exception:
+                            pass
+            except PlaywrightError as exc:
+                raise RuntimeError(
+                    f"Falha ao controlar o navegador no Sakura Mangas: {exc}"
+                ) from exc
 
     def _sakura_select_selector(self, page) -> str:
         if page.locator(SAKURA_READER_SELECTOR).count() > 0:
@@ -1726,52 +2018,29 @@ class MangaReader:
         return image_urls, image_cache
 
     def _load_sakura_chapter(self, url: str) -> dict:
-        if sync_playwright is None:
-            raise RuntimeError(
-                "Playwright nao esta instalado. Rode: python -m pip install -r requirements.txt"
-            )
-
         with self.lock:
-            if not self._is_sakura_source(url):
+            chapter_parts = self._sakura_chapter_parts(url)
+            if not chapter_parts:
                 raise ValueError("Informe uma URL de capitulo do Sakura Mangas.")
+            url = self._sakura_chapter_url(*chapter_parts)
 
-            title = ""
-            cache_dir: Path | None = None
-            image_urls: list[str] = []
-            image_cache: dict[int, ImageCacheEntry] = {}
+            def extract(page):
+                timeout_ms = max(int(self.args.timeout) * 1000, 90_000)
+                page.wait_for_selector(SAKURA_FALLBACK_SELECTOR, timeout=timeout_ms)
+                selector = self._sakura_select_selector(page)
+                self._sakura_hydrate(page, selector)
+                page_title = normalize_text(page.title() or "")
+                target = self.cache.new_chapter_dir(
+                    self._sakura_label_from_url(url, page_title)
+                )
+                page_urls, page_cache = self._sakura_extract_pages(page, selector, target)
+                return page_title, target, page_urls, page_cache
 
-            with self._sakura_browser_lock:
-                try:
-                    with sync_playwright() as playwright:
-                        context, cleanup = self._open_sakura_context(playwright)
-                        try:
-                            page = context.pages[0] if context.pages else context.new_page()
-                            page.add_init_script(SAKURA_BLOB_PROBE_JS)
-                            timeout_ms = max(int(self.args.timeout) * 1000, 60_000)
-                            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-                            self._sakura_wait_for_access(page)
-                            page.wait_for_selector(
-                                SAKURA_FALLBACK_SELECTOR,
-                                timeout=max(timeout_ms, 90_000),
-                            )
-                            selector = self._sakura_select_selector(page)
-                            self._sakura_hydrate(page, selector)
-                            title = normalize_text(page.title() or "")
-                            cache_dir = self.cache.new_chapter_dir(
-                                self._sakura_label_from_url(url, title)
-                            )
-                            image_urls, image_cache = self._sakura_extract_pages(
-                                page, selector, cache_dir
-                            )
-                        finally:
-                            try:
-                                cleanup()
-                            except Exception:
-                                pass
-                except PlaywrightError as exc:
-                    raise RuntimeError(
-                        f"Falha ao controlar o navegador no Sakura Mangas: {exc}"
-                    ) from exc
+            title, cache_dir, image_urls, image_cache = self._sakura_run_page(
+                url,
+                extract,
+                init_script=SAKURA_BLOB_PROBE_JS,
+            )
 
             if not image_urls or cache_dir is None:
                 raise RuntimeError(
@@ -5325,6 +5594,7 @@ class MangaReader:
         last_error: Exception | None = None
         had_success = False
         providers = (
+            ("sakura", lambda term: self.search_sakura(term, scan_limit)),
             ("mangasbrasuka", lambda term: self.search_mangasbrasuka(term, scan_limit)),
             ("mangalivre", lambda term: self.search_mangalivre(term, scan_limit)),
             ("mangadex", lambda term: self.search_mangadex(term, scan_limit)),
@@ -5665,6 +5935,26 @@ class MangaReader:
                 "chapter_count": chapters_payload.get("count", 0),
                 "selected_chapter_url": chapters_payload.get("selected_url"),
                 "chapters": chapters_payload.get("chapters", []),
+            }
+
+        if self._is_sakura_source(source_url):
+            parts = self._sakura_source_parts(source_url)
+            if not parts:
+                raise ValueError("Informe uma URL do Sakura Mangas.")
+            manga, chapters = self._sakura_scrape_manga(self._sakura_manga_url(parts[0]))
+            selected = self._select_chapter(chapters, source_url, preferred_chapter)
+            visible_chapters = [
+                self._serialize_chapter(chapter)
+                for chapter in reversed(chapters)
+            ] if include_chapters else []
+            return {
+                "ok": True,
+                "provider": "sakura",
+                "manga": manga,
+                "language": "pt-br",
+                "chapter_count": len(chapters),
+                "selected_chapter_url": selected.url if selected else None,
+                "chapters": visible_chapters,
             }
 
         if self._is_mangadex_source(source_url):
@@ -6010,7 +6300,7 @@ class MangaReader:
             or (self._is_pieceproject_source(source_url) and self._pieceproject_chapter_number_from_source(source_url))
             or (self._is_noveltoon_source(source_url) and self._noveltoon_chapter_parts(source_url))
             or (self._is_yumo_source(source_url) and self._yumo_chapter_parts(source_url))
-            or self._is_sakura_source(source_url)
+            or (self._is_sakura_source(source_url) and self._sakura_chapter_parts(source_url))
         ):
             return self.load_chapter(source_url)
 
@@ -6616,6 +6906,8 @@ class ReaderHandler(BaseHTTPRequestHandler):
                 self._handle_json(lambda: self.reader.search_mangalivre(keyword, limit=limit))
             elif provider == "mangasbrasuka":
                 self._handle_json(lambda: self.reader.search_mangasbrasuka(keyword, limit=limit))
+            elif provider == "sakura":
+                self._handle_json(lambda: self.reader.search_sakura(keyword, limit=limit))
             elif provider == "mangakatana":
                 self._handle_json(lambda: self.reader.search_mangakatana(keyword, limit=limit))
             else:
@@ -6824,7 +7116,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--sakura-cdp-url",
         default=os.environ.get("SAKURA_CDP_URL", DEFAULT_SAKURA_CDP_URL),
-        help="Endpoint CDP de um Chrome/Brave ja aberto (resolve Cloudflare). Padrao: http://127.0.0.1:9222",
+        help="Endpoint CDP de um Chrome/Brave ja aberto. Padrao: http://127.0.0.1:9333",
     )
     parser.add_argument(
         "--sakura-profile-dir",

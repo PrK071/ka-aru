@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useState } from "react"
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000"
+const PLACEHOLDER_URL = `${API_BASE_URL}/static/placeholder.svg`
 
 function resolveImageUrl(url) {
   if (!url) return ""
@@ -50,13 +51,26 @@ export function MangaCardSkeleton() {
 
 function MangaCard({ manga, priority = false, onSelect }) {
   const [loaded, setLoaded] = useState(false)
-  const [coverIndex, setCoverIndex] = useState(0)
+  const [srcIndex, setSrcIndex] = useState(0)
+  const [broken, setBroken] = useState(false)
   const coverUrls = useMemo(
-    () => [manga.cover_url, ...(manga.cover_fallbacks ?? [])].filter(Boolean),
-    [manga.cover_url, manga.cover_fallbacks],
+    () => [manga.cover_path, manga.cover_url, ...(manga.cover_fallbacks ?? [])].filter(Boolean),
+    [manga.cover_path, manga.cover_url, manga.cover_fallbacks],
   )
-  const currentCover = coverIndex >= 0 ? resolveImageUrl(coverUrls[coverIndex]) : ""
-  const hasCover = Boolean(currentCover)
+  const currentCover =
+    !broken && srcIndex < coverUrls.length
+      ? resolveImageUrl(coverUrls[srcIndex])
+      : PLACEHOLDER_URL
+
+  const handleCoverError = () => {
+    if (srcIndex + 1 < coverUrls.length) {
+      setSrcIndex((index) => index + 1) // tenta proxima fonte de capa
+    } else if (!broken) {
+      setBroken(true) // sem mais fontes -> placeholder "Sem Capa"
+    } else {
+      setLoaded(true) // ate o placeholder falhou: garante visivel (sem opacity-0)
+    }
+  }
   const chapterText = Number.isFinite(Number(manga.chapter_count))
     ? `${manga.chapter_count} caps`
     : manga.source
@@ -68,8 +82,9 @@ function MangaCard({ manga, priority = false, onSelect }) {
 
   useEffect(() => {
     setLoaded(false)
-    setCoverIndex(0)
-  }, [manga.id, manga.cover_url])
+    setSrcIndex(0)
+    setBroken(false)
+  }, [manga.id, manga.cover_path, manga.cover_url])
 
   return (
     <button
@@ -78,33 +93,20 @@ function MangaCard({ manga, priority = false, onSelect }) {
       className="group relative flex h-[430px] w-full flex-col overflow-hidden rounded-lg border border-line bg-panel text-left shadow-card transition-all duration-200 hover:-translate-y-1 hover:border-zinc-600 hover:shadow-glow focus:outline-none focus:ring-1 focus:ring-accent/60"
     >
       <div className="relative h-[300px] overflow-hidden">
-        {hasCover ? (
-          <>
-            {!loaded && <div className="absolute inset-0 animate-pulse bg-zinc-800" />}
-            <img
-              src={currentCover}
-              alt={`Capa de ${manga.title}`}
-              loading={priority ? "eager" : "lazy"}
-              decoding="async"
-              fetchPriority={priority ? "high" : "low"}
-              draggable="false"
-              onLoad={() => setLoaded(true)}
-              onError={() => {
-                setLoaded(false)
-                setCoverIndex((index) => (
-                  index + 1 < coverUrls.length ? index + 1 : -1
-                ))
-              }}
-              className={`h-full w-full object-cover transition duration-300 group-hover:scale-105 ${
-                loaded ? "opacity-100" : "opacity-0"
-              }`}
-            />
-          </>
-        ) : (
-          <div className="flex h-full items-center justify-center px-4 text-center text-5xl font-black text-zinc-700">
-            {manga.title?.slice(0, 1) || "M"}
-          </div>
-        )}
+        {!loaded && <div className="absolute inset-0 animate-pulse bg-zinc-800" />}
+        <img
+          src={currentCover}
+          alt={`Capa de ${manga.title}`}
+          loading={priority ? "eager" : "lazy"}
+          decoding="async"
+          fetchPriority={priority ? "high" : "low"}
+          draggable="false"
+          onLoad={() => setLoaded(true)}
+          onError={handleCoverError}
+          className={`h-full w-full object-cover transition duration-300 group-hover:scale-105 ${
+            loaded ? "opacity-100" : "opacity-0"
+          }`}
+        />
 
         {/* gradiente pra fundir a capa no card */}
         <div className="pointer-events-none absolute inset-x-0 bottom-0 h-2/3 bg-fade-app" />
