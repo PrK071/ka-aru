@@ -698,8 +698,15 @@ export default function App() {
       try {
         const trimmedQuery = query.trim()
         const params = new URLSearchParams({ limit: trimmedQuery ? "40" : "32" })
-        if (trimmedQuery) params.set("q", trimmedQuery)
-        const response = await fetch(`${API_BASE_URL}/api/mangas?${params}`, {
+        // Rotas tipadas: /api/search?q=... (busca) e /api/home (catalogo).
+        let endpoint
+        if (trimmedQuery) {
+          params.set("q", trimmedQuery)
+          endpoint = `/api/search`
+        } else {
+          endpoint = `/api/home`
+        }
+        const response = await fetch(`${API_BASE_URL}${endpoint}?${params}`, {
           signal: controller.signal,
           headers: { Accept: "application/json" },
         })

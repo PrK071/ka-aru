@@ -19,6 +19,13 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from schemas import (
+    HomeResponse,
+    MangaHomeItem,
+    MangaSearchItem,
+    SearchResponse,
+)
+
 from reader_server import (
     DEFAULT_HEADERS,
     MangaReader,
@@ -2098,34 +2105,74 @@ def list_mangas(
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
-    query = q.strip()
+    """Compat: rota legada. Delega p/ a busca (com q) ou a home (sem q).
+
+    Mantida para nao quebrar clientes antigos; as rotas novas e TIPADAS sao
+    /api/search e /api/home.
+    """
+    if q.strip():
+        return _build_search_payload(q, genre, limit, offset)
+    return _build_home_payload(genre, limit, offset)
+
+
+@app.get("/api/search", response_model=SearchResponse)
+def search_mangas(
+    q: str = Query(..., description="Termo de busca por titulo em fontes reais."),
+    genre: str = Query(default="", description="Filtro local por genero."),
+    limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> SearchResponse:
+    """Busca tipada: retorna MangaSearchItem (sinopse, generos, autores, etc.)."""
+    return SearchResponse(**_build_search_payload(q, genre, limit, offset))
+
+
+@app.get("/api/home", response_model=HomeResponse)
+def home_catalog(
+    genre: str = Query(default="", description="Filtro local por genero."),
+    limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> HomeResponse:
+    """Home tipada: obras PRONTAS (capa real + capitulos) como MangaHomeItem."""
+    return HomeResponse(**_build_home_payload(genre, limit, offset))
+
+
+def _matches_genre_factory(genre: str):
     genre_filter = normalize_match_text(genre)
 
-    def _matches_genre(item: dict) -> bool:
+    def _matches(item: dict) -> bool:
         if not genre_filter:
             return True
         return any(
             normalize_match_text(g) == genre_filter for g in (item.get("genres") or [])
         )
 
-    # ---------------- BUSCA: mantem payload completo (poucos itens) ----------
-    if query:
-        data = _search_mangas(query, limit=max(limit + offset, limit))
-        items = [it for it in (data.get("items") or []) if _matches_genre(it)]
-        sections = [
-            {"title": sec.get("title"), "items": [it for it in (sec.get("items") or []) if _matches_genre(it)]}
-            for sec in (data.get("sections") or [{"title": "Resultados", "items": items}])
-        ]
-        sections = [sec for sec in sections if sec["items"]]
-        paged = items[offset : offset + limit]
-        result = {**data, "items": paged, "sections": sections,
-                  "total": len(items), "limit": limit, "offset": offset}
-        _finalize_payload_descriptions(result)  # traducao so na busca
-        return result
+    return _matches
 
-    # ---------------- HOME: payload ENXUTO, SEM traducao --------------------
-    # So obras PRONTAS na linha de frente: com capa real + capitulos.
-    # (filtro so na home; a busca acima nao e afetada)
+
+def _build_search_payload(q: str, genre: str, limit: int, offset: int) -> dict:
+    """Logica de BUSCA: payload completo (poucos itens), com traducao."""
+    query = q.strip()
+    _matches_genre = _matches_genre_factory(genre)
+
+    data = _search_mangas(query, limit=max(limit + offset, limit))
+    items = [it for it in (data.get("items") or []) if _matches_genre(it)]
+    sections = [
+        {"title": sec.get("title"), "layout": sec.get("layout", ""),
+         "items": [it for it in (sec.get("items") or []) if _matches_genre(it)]}
+        for sec in (data.get("sections") or [{"title": "Resultados", "items": items}])
+    ]
+    sections = [sec for sec in sections if sec["items"]]
+    paged = items[offset : offset + limit]
+    result = {**data, "items": paged, "sections": sections,
+              "total": len(items), "limit": limit, "offset": offset}
+    _finalize_payload_descriptions(result)  # traducao so na busca
+    return result
+
+
+def _build_home_payload(genre: str, limit: int, offset: int) -> dict:
+    """Logica da HOME: payload p/ o card, so obras PRONTAS (capa real + caps)."""
+    _matches_genre = _matches_genre_factory(genre)
+
     data = _build_catalog(limit=max(limit + offset, limit))
     items = [it for it in (data.get("items") or []) if _matches_genre(it) and _is_home_ready(it)]
     sections_src = data.get("sections") or [{"title": "Destaques", "items": items}]
@@ -2139,7 +2186,11 @@ def list_mangas(
             if _matches_genre(it) and _is_home_ready(it)
         ]
         if sec_items:
-            slim_sections.append({"title": sec.get("title"), "items": sec_items})
+            slim_sections.append({
+                "title": sec.get("title"),
+                "layout": sec.get("layout", ""),  # preserva 'carousel' do hero "Em alta"
+                "items": sec_items,
+            })
 
     return {
         "items": slim_items,
