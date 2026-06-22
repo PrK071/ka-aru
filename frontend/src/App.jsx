@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useQuery } from "@tanstack/react-query"
 import { FixedSizeGrid as Grid } from "react-window"
 import MangaCard, { MangaCardSkeleton } from "./components/MangaCard.jsx"
 
@@ -397,7 +398,23 @@ function MangaDetailPanel({ manga, onClose }) {
 
   // Lista da home e enxuta; os metadados ricos (sinopse multi-idioma, generos,
   // autores, idiomas) vem do /api/chapters (payload.manga) e sao mesclados aqui.
-  const detail = useMemo(() => ({ ...manga, ...(meta || {}) }), [manga, meta])
+  // MERGE que PRESERVA o card: o /api/chapters retorna o objeto manga com TODAS
+  // as chaves, mesmo vazias (description:"", genres:[], authors:[]). Um spread
+  // ingenuo ({...manga, ...meta}) deixaria esses vazios sobrescrever os dados bons
+  // do card -> sinopse/autor/tags "fugiam" quando os capitulos chegavam. Aqui o
+  // meta so sobrescreve quando traz valor de fato (string nao-vazia / array com
+  // itens / valor != null); senao mantem o que veio do card.
+  const detail = useMemo(() => {
+    const merged = { ...manga }
+    for (const [key, value] of Object.entries(meta || {})) {
+      const isEmpty =
+        value == null ||
+        (typeof value === "string" && value.trim() === "") ||
+        (Array.isArray(value) && value.length === 0)
+      if (!isEmpty) merged[key] = value
+    }
+    return merged
+  }, [manga, meta])
 
   const descriptions = Array.isArray(detail?.descriptions) && detail.descriptions.length
     ? detail.descriptions
@@ -681,60 +698,51 @@ function MangaDetailPanel({ manga, onClose }) {
 
 export default function App() {
   const [query, setQuery] = useState("")
-  const [mangas, setMangas] = useState([])
-  const [sections, setSections] = useState([])
+  const [debouncedQuery, setDebouncedQuery] = useState("")
   const [selectedManga, setSelectedManga] = useState(null)
-  const [total, setTotal] = useState(0)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState("")
-  const [refreshTick, setRefreshTick] = useState(0)
 
+  // Debounce do termo digitado (180ms) -> uma query por pausa, nao por tecla.
+  // A queryKey usa o valor "debounced"; o input continua refletindo `query`.
   useEffect(() => {
-    const controller = new AbortController()
-    let retryId = null
-    const timeout = setTimeout(async () => {
-      setLoading(true)
-      setError("")
-      try {
-        const trimmedQuery = query.trim()
-        const params = new URLSearchParams({ limit: trimmedQuery ? "40" : "32" })
-        // Rotas tipadas: /api/search?q=... (busca) e /api/home (catalogo).
-        let endpoint
-        if (trimmedQuery) {
-          params.set("q", trimmedQuery)
-          endpoint = `/api/search`
-        } else {
-          endpoint = `/api/home`
-        }
-        const response = await fetch(`${API_BASE_URL}${endpoint}?${params}`, {
-          signal: controller.signal,
-          headers: { Accept: "application/json" },
-        })
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const payload = await response.json()
-        setMangas(payload.items ?? [])
-        setSections(payload.sections ?? [])
-        setTotal(payload.total ?? payload.items?.length ?? 0)
-        if (!trimmedQuery && payload.refreshing) {
-          retryId = window.setTimeout(() => {
-            setRefreshTick((value) => value + 1)
-          }, 2500)
-        }
-      } catch (err) {
-        if (err.name !== "AbortError") {
-          setError("Nao consegui carregar o catalogo.")
-        }
-      } finally {
-        if (!controller.signal.aborted) setLoading(false)
-      }
-    }, 180)
+    const id = setTimeout(() => setDebouncedQuery(query.trim()), 180)
+    return () => clearTimeout(id)
+  }, [query])
 
-    return () => {
-      clearTimeout(timeout)
-      if (retryId) clearTimeout(retryId)
-      controller.abort()
-    }
-  }, [query, refreshTick])
+  // Fonte unica do catalogo (home/busca) via React Query.
+  // queryKey distingue home ("") de cada termo de busca -> cada um tem seu cache.
+  // Ao fechar o modal a Home volta do cache (fresca) -> sem refetch/flicker.
+  const catalogQuery = useQuery({
+    queryKey: ["catalog", debouncedQuery],
+    queryFn: async ({ signal }) => {
+      const params = new URLSearchParams({ limit: debouncedQuery ? "40" : "32" })
+      let endpoint = "/api/home"
+      if (debouncedQuery) {
+        params.set("q", debouncedQuery)
+        endpoint = "/api/search"
+      }
+      const response = await fetch(`${API_BASE_URL}${endpoint}?${params}`, {
+        signal,
+        headers: { Accept: "application/json" },
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      return response.json()
+    },
+    // Mantem o resultado anterior visivel enquanto a nova query carrega
+    // (digitar busca nao pisca skeleton; trocar de termo e suave).
+    placeholderData: (previous) => previous,
+    // Enquanto o backend aquece o catalogo (refreshing=true) na home, repoll 2.5s.
+    refetchInterval: (q) =>
+      !debouncedQuery && q.state.data?.refreshing ? 2500 : false,
+  })
+
+  const payload = catalogQuery.data
+  const mangas = payload?.items ?? []
+  const sections = payload?.sections ?? []
+  const total = payload?.total ?? mangas.length
+  // Skeleton SO no primeiro carregamento (sem dado em cache). Voltar do modal
+  // serve o cache -> isPending=false -> aparece instantaneo.
+  const loading = catalogQuery.isPending
+  const error = catalogQuery.isError ? "Nao consegui carregar o catalogo." : ""
 
   const heroSection = (sections ?? []).find(
     (s) => s.layout === "carousel" && s.title === "Em alta",
@@ -743,6 +751,8 @@ export default function App() {
   const catalogSections = (sections ?? []).filter(
     (s) => !(s.layout === "carousel" && s.title === "Em alta"),
   )
+
+  const isSearching = debouncedQuery.length > 0
 
   return (
     <div className="min-h-screen bg-app text-zinc-100">
@@ -754,7 +764,7 @@ export default function App() {
       )}
       {loading ? (
         <SkeletonGrid />
-      ) : query.trim() ? (
+      ) : isSearching ? (
         <VirtualMangaGrid mangas={mangas} onSelect={setSelectedManga} />
       ) : (
         <>
