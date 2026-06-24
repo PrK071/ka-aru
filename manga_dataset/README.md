@@ -1,5 +1,7 @@
 # manga_dataset
 
+Subprojeto do [Kari](https://github.com/PrK071/Kari).
+
 Raspador modular de mangás/webtoons que **re-hospeda as imagens no Hugging Face**
 (Git LFS) e cataloga tudo num **SQLite** (`mangas.db`) — pronto pra publicar e a
 comunidade consumir via código.
