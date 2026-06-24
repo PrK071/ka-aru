@@ -21,14 +21,14 @@ Catálogo/leitor local de mangás e manhwas com back-end FastAPI e front-end Rea
 Back-end:
 
 ```powershell
-cd "C:\Users\User\Documents\scrapper manga"
+cd "C:\Users\User\Documents\Kari"
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 Front-end:
 
 ```powershell
-cd "C:\Users\User\Documents\scrapper manga\frontend"
+cd "C:\Users\User\Documents\Kari\frontend"
 npm run dev
 ```
 
