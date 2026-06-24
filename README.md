@@ -1,4 +1,4 @@
-# MangaTemp
+# Kari
 
 Catálogo/leitor local de mangás e manhwas com back-end FastAPI e front-end React/Vite.
 
